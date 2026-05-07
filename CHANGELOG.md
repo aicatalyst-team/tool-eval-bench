@@ -4,6 +4,37 @@ All notable changes to `tool-eval-bench` are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Public programmatic API** (`tool_eval_bench.api`) — new `run_benchmark()` async
+  function for headless/library invocation by external integrators (e.g. sparkrun).
+  Returns a versioned JSON-serializable dict with `schema_version` and promoted
+  Spark Arena fields (`final_score`, `rating`, `safety_warnings`, `deployability`,
+  `responsiveness`, `total_scenarios`).  Persistence is opt-in via `persist=False`
+  for callers that handle their own storage.
+- **`--json-file PATH`** CLI flag — write JSON results to a file instead of stdout
+  (implies `--json`).  Keeps stdout clean for subprocess consumers.  Emits a
+  `benchmark_complete` JSONL event on stderr when done.
+- **JSONL progress events on stderr** — when `--json` is active, structured progress
+  events (`scenario_start`, `scenario_result`) are emitted as one-line JSON objects
+  on stderr for real-time progress tracking by orchestrators.
+- **Machine-readable args schema** (`tool_eval_bench.schema`) — `ARGS_SCHEMA` list
+  and `get_schema()` function for external tools to validate benchmark configuration.
+  Also re-exported from `tool_eval_bench.api.ARGS_SCHEMA`.
+- **Convenience re-export** — `from tool_eval_bench import run_benchmark` works
+  as a shorthand for the `api.run_benchmark()` function.
+- **21 new tests** (`tests/test_api.py`) covering versioned envelope, Spark Arena
+  field promotion, args schema validation, programmatic API invocation, JSONL
+  progress callbacks, and `--json-file` output.
+  Total test count: **1,368**.
+
+### Changed
+
+- **`BenchmarkService` persistence is now optional** — `repo` and `reporter`
+  constructor arguments accept `None` to skip SQLite and Markdown writes.  This
+  supports the `persist=False` path in the public API without breaking existing
+  CLI behavior (which always passes concrete instances).
+
 ## [1.5.1] — 2026-05-04
 
 ### Added

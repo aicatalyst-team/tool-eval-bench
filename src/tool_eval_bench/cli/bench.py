@@ -928,6 +928,9 @@ def main() -> None:
     # -- Output ------------------------------------------------------------
     output = parser.add_argument_group("output")
     output.add_argument("--json", action="store_true", help="Output raw JSON instead of rich display")
+    output.add_argument("--json-file", default=None, metavar="PATH",
+                        help="Write JSON results to PATH instead of stdout "
+                             "(implies --json; keeps stdout clean for logging)")
     output.add_argument("--no-live", action="store_true", help="Disable live updating display")
     output.add_argument("--redact-url", action="store_true",
                         help="Mask the server URL in display output (for screenshots/recordings)")
@@ -1027,6 +1030,11 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # --json-file implies --json
+    if args.json_file:
+        args.json = True
+
     console = Console()
 
     # --interactive: launch Textual TUI and exit
@@ -2107,6 +2115,72 @@ def _run_with_live_display(
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# JSONL progress callbacks for headless mode (sparkrun integration)
+# ---------------------------------------------------------------------------
+
+async def _stderr_progress_start(
+    scenario: ScenarioDefinition, idx: int, total: int,
+) -> None:
+    """Emit a JSONL progress event to stderr when a scenario starts."""
+    msg = {
+        "event": "scenario_start",
+        "scenario_id": scenario.id,
+        "title": scenario.title,
+        "category": scenario.category.value,
+        "index": idx,
+        "total": total,
+    }
+    sys.stderr.write(json.dumps(msg) + "\n")
+    sys.stderr.flush()
+
+
+async def _stderr_progress_result(
+    scenario: ScenarioDefinition, result: ScenarioResult, idx: int, total: int,
+) -> None:
+    """Emit a JSONL progress event to stderr when a scenario completes."""
+    msg = {
+        "event": "scenario_result",
+        "scenario_id": scenario.id,
+        "status": result.status.value,
+        "points": result.points,
+        "index": idx,
+        "total": total,
+        "duration_seconds": round(result.duration_seconds, 2),
+    }
+    sys.stderr.write(json.dumps(msg) + "\n")
+    sys.stderr.flush()
+
+
+def _emit_json_output(data: dict[str, Any], *, json_file: str | None = None) -> None:
+    """Write versioned JSON output to stdout or a file.
+
+    When *json_file* is set, the JSON is written to that path (keeps stdout
+    clean for sparkrun / subprocess consumers).  Otherwise it goes to stdout.
+    """
+    from tool_eval_bench.api import format_result
+
+    envelope = format_result(data)
+    text = json.dumps(envelope, indent=2, default=str)
+
+    if json_file:
+        from pathlib import Path
+
+        out = Path(json_file)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        # Also emit a final JSONL event so callers know where to find it
+        msg = {
+            "event": "benchmark_complete",
+            "json_file": str(out),
+            "final_score": envelope.get("scores", {}).get("final_score"),
+        }
+        sys.stderr.write(json.dumps(msg) + "\n")
+        sys.stderr.flush()
+    else:
+        print(text)
+
+
 def _run_json(
     service: BenchmarkService,
     model: str,
@@ -2120,9 +2194,10 @@ def _run_json(
     context_pressure_config: dict | None = None,
     run_context: Any | None = None,
 ) -> None:
-    """Run and output raw JSON."""
+    """Run and output raw JSON (with optional JSONL progress on stderr)."""
     trials = max(1, args.trials)
     resolved = _resolve_scenarios(args)
+    json_file = getattr(args, "json_file", None)
 
     async def run() -> dict:
         return await service.run_benchmark(
@@ -2143,6 +2218,8 @@ def _run_json(
             context_pressure_messages=context_pressure_messages,
             context_pressure_config=context_pressure_config,
             run_context=run_context,
+            on_scenario_start=_stderr_progress_start,
+            on_scenario_result=_stderr_progress_result,
         )
 
     try:
@@ -2152,11 +2229,12 @@ def _run_json(
     except KeyboardInterrupt:
         sys.exit(1)
     except Exception as exc:
-        print(json.dumps({"error": str(exc)}))
+        error_data = {"error": str(exc)}
+        _emit_json_output(error_data, json_file=json_file)
         sys.exit(1)
 
     if trials == 1:
-        print(json.dumps(results[0], indent=2, default=str))
+        _emit_json_output(results[0], json_file=json_file)
     else:
         # Aggregate trial data
         from tool_eval_bench.runner.orchestrator import score_results
@@ -2181,7 +2259,7 @@ def _run_json(
         output = results[-1]  # last run as the primary result
         if agg:
             output["trial_statistics"] = agg
-        print(json.dumps(output, indent=2, default=str))
+        _emit_json_output(output, json_file=json_file)
 
 
 def _run_plain(

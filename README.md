@@ -175,6 +175,7 @@ tool-eval-bench --model gemma4 --backend vllm --base-url http://localhost:8080
 --seed N               Random seed passed to server (controls logit sampling only — does not guarantee full run-to-run reproducibility; KV-cache and CUDA non-determinism still apply)
 --parallel N           Run N scenarios concurrently (default: 1). Values >1 may cause server-load timeouts recorded as FAIL — use --parallel 1 for reliable quality scores
 --json                 Output raw JSON
+--json-file PATH       Write JSON to PATH instead of stdout (implies --json)
 --no-live              Disable live progress footer
 --no-warmup            Skip server warm-up request
 --redact-url           Mask the server URL in display output (useful for screenshots/recordings)
@@ -403,6 +404,67 @@ The filler is designed to defeat server-side prefix caching (vLLM, llama.cpp):
 
 This ensures that every run produces a completely unique token sequence, forcing full KV cache computation rather than hitting cached prefixes.
 
+## Programmatic API
+
+`tool-eval-bench` exposes a public Python API for headless/library invocation — useful for CI systems, orchestrators like [sparkrun](https://github.com/spark-arena/sparkrun), or any tool that needs to run benchmarks programmatically.
+
+```python
+import asyncio
+from tool_eval_bench.api import run_benchmark
+
+result = asyncio.run(run_benchmark(
+    model="Qwen/Qwen3-8B",
+    base_url="http://localhost:8000",
+    backend="vllm",
+    short=True,           # core 15 scenarios
+    persist=False,        # skip SQLite/Markdown (caller handles storage)
+    on_scenario_result=my_callback,  # async progress callback
+))
+
+print(result["final_score"])      # e.g. 87
+print(result["rating"])           # e.g. "★★★★ Good"
+print(result["schema_version"])   # "1"
+```
+
+The returned dict includes a versioned envelope with top-level Spark Arena fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `schema_version` | str | Output schema version (currently `"1"`) |
+| `tool_eval_bench_version` | str | Package version (e.g. `"1.5.1"`) |
+| `final_score` | int | 0–100 composite score |
+| `rating` | str | Star rating string |
+| `safety_warnings` | list | Safety-critical failures (empty when clean) |
+| `deployability` | int/None | 0–100 composite (when latency data available) |
+| `total_scenarios` | int | Number of scenarios evaluated |
+
+### Machine-readable args schema
+
+External tools can validate benchmark configuration against the published schema:
+
+```python
+from tool_eval_bench.schema import get_schema
+
+schema = get_schema()  # {"schema_version": "1", "args": [...]}
+for arg in schema["args"]:
+    print(f"{arg['name']}: {arg['type']} = {arg['default']}")
+```
+
+### Subprocess mode
+
+For subprocess-based integration, use `--json-file` to write results to a file and parse JSONL progress events from stderr:
+
+```bash
+tool-eval-bench --json-file /tmp/result.json --base-url http://localhost:8000 2>progress.jsonl
+```
+
+Progress events on stderr:
+```jsonl
+{"event":"scenario_start","scenario_id":"TC-01","index":0,"total":69}
+{"event":"scenario_result","scenario_id":"TC-01","status":"pass","points":2,"index":0,"total":69,"duration_seconds":1.23}
+{"event":"benchmark_complete","json_file":"/tmp/result.json","final_score":87}
+```
+
 ## How It Works
 
 For every scenario, the model receives:
@@ -423,6 +485,8 @@ The orchestrator then:
 
 ```text
 src/tool_eval_bench/
+  api.py              # Public programmatic API (run_benchmark, format_result)
+  schema.py           # Machine-readable args schema for external validators
   adapters/           # OpenAI-compatible adapter (vllm, litellm, llamacpp)
   cli/
     bench.py          # Main CLI entry point (tool-eval-bench)

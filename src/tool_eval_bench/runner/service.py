@@ -160,15 +160,17 @@ class BenchmarkService:
         if context_pressure_config:
             run_data["config"]["context_pressure"] = context_pressure_config
 
-        self.repo.upsert_scenario_run(run_data)
-        report_path = self.reporter.write_scenario_report(
-            run_id, model, summary,
-            throughput_samples=throughput_samples or [],
-            context_pressure_config=context_pressure_config,
-            run_context=run_context,
-        )
+        if self.repo is not None:
+            self.repo.upsert_scenario_run(run_data)
+        if self.reporter is not None:
+            report_path = self.reporter.write_scenario_report(
+                run_id, model, summary,
+                throughput_samples=throughput_samples or [],
+                context_pressure_config=context_pressure_config,
+                run_context=run_context,
+            )
+            run_data["report_path"] = str(report_path)
 
-        run_data["report_path"] = str(report_path)
         return run_data
 
 
