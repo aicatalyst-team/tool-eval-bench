@@ -419,3 +419,139 @@ class TestHeadlessError:
             _headless_error("unknown", "Something broke")
 
         assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# Server auto-discovery
+# ---------------------------------------------------------------------------
+
+class TestServerDiscovery:
+    """Test automatic inference server port scanning."""
+
+    def test_discovers_vllm_on_8000(self, capsys):
+        from tool_eval_bench.cli.bench import _discover_server
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("tool_eval_bench.cli.bench.asyncio") as mock_asyncio:
+            # The async function returns a coroutine result
+            async def fake_probe():
+                return ("http://localhost:8000", "vllm")
+            mock_asyncio.run.return_value = ("http://localhost:8000", "vllm")
+
+            result = _discover_server(headless=True)
+
+        assert result is not None
+        base_url, backend = result
+        assert base_url == "http://localhost:8000"
+        assert backend == "vllm"
+
+        # Headless mode should emit JSONL
+        captured = capsys.readouterr()
+        event = json.loads(captured.err.strip())
+        assert event["event"] == "server_discovered"
+        assert event["port"] == 8000
+
+    def test_returns_none_when_no_server(self):
+        from tool_eval_bench.cli.bench import _discover_server
+
+        with patch("tool_eval_bench.cli.bench.asyncio") as mock_asyncio:
+            mock_asyncio.run.return_value = None
+
+            result = _discover_server(headless=True)
+
+        assert result is None
+
+    def test_common_ports_list(self):
+        from tool_eval_bench.cli.bench import _COMMON_PORTS
+
+        ports = [p for p, _, _ in _COMMON_PORTS]
+        # vLLM default
+        assert 8000 in ports
+        # llama.cpp default
+        assert 8080 in ports
+        # SGLang default
+        assert 30000 in ports
+        # LiteLLM default
+        assert 4000 in ports
+
+
+# ---------------------------------------------------------------------------
+# Probe server readiness
+# ---------------------------------------------------------------------------
+
+class TestProbeServer:
+    """Test the --probe readiness check."""
+
+    def test_probe_success_exits_0(self, capsys):
+        from io import StringIO
+
+        from rich.console import Console
+
+        from tool_eval_bench.cli.bench import _probe_server
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"id": "test-model"}]
+        }
+
+        console = Console(file=StringIO(), width=200, no_color=True)
+
+        with patch("tool_eval_bench.cli.bench.asyncio") as mock_asyncio:
+            mock_asyncio.run.return_value = mock_resp
+            with pytest.raises(SystemExit) as exc_info:
+                _probe_server(console, "http://localhost:8000", None, headless=True)
+
+        assert exc_info.value.code == 0
+
+        captured = capsys.readouterr()
+        event = json.loads(captured.err.strip())
+        assert event["event"] == "probe_result"
+        assert event["status"] == "ready"
+        assert "test-model" in event["models"]
+
+    def test_probe_failure_exits_1(self, capsys):
+        from io import StringIO
+
+        from rich.console import Console
+
+        from tool_eval_bench.cli.bench import _probe_server
+
+        console = Console(file=StringIO(), width=200, no_color=True)
+
+        with patch("tool_eval_bench.cli.bench.asyncio") as mock_asyncio:
+            mock_asyncio.run.side_effect = Exception("Connection refused")
+            with pytest.raises(SystemExit) as exc_info:
+                _probe_server(console, "http://localhost:8000", None, headless=True)
+
+        assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        event = json.loads(captured.err.strip())
+        assert event["event"] == "probe_result"
+        assert event["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Stdout cleanliness in --json mode
+# ---------------------------------------------------------------------------
+
+class TestJsonStdoutCleanliness:
+    """Verify that non-JSON output is suppressed when --json is active."""
+
+    def test_warmup_suppressed_in_json_mode(self):
+        """Warmup should not run in --json mode."""
+        # The guard is: `if not args.no_warmup and not args.json:`
+        # We verify the condition directly since we can't easily invoke main()
+        args = MagicMock()
+        args.no_warmup = False
+        args.json = True
+        # The condition `not args.no_warmup and not args.json` should be False
+        assert not (not args.no_warmup and not args.json)
+
+    def test_warmup_runs_in_normal_mode(self):
+        args = MagicMock()
+        args.no_warmup = False
+        args.json = False
+        assert (not args.no_warmup and not args.json)

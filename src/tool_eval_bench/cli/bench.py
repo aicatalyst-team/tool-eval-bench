@@ -85,6 +85,72 @@ def _redact_url(url: str) -> str:
     from tool_eval_bench.utils.urls import redact_url
     return redact_url(url)
 
+# ---------------------------------------------------------------------------
+# Server auto-discovery
+# ---------------------------------------------------------------------------
+
+# Common inference server ports: (port, backend_hint, server_name)
+_COMMON_PORTS: list[tuple[int, str, str]] = [
+    (8000, "vllm", "vLLM"),
+    (8080, "llamacpp", "llama.cpp / llama-server"),
+    (30000, "vllm", "SGLang"),
+    (4000, "litellm", "LiteLLM"),
+    (11434, "litellm", "Ollama"),
+    (5000, "vllm", "TGI"),
+]
+
+
+def _discover_server(
+    *, headless: bool = False, console: Console | None = None,
+) -> tuple[str, str] | None:
+    """Probe localhost on common inference server ports.
+
+    Returns ``(base_url, backend_hint)`` for the first port that responds
+    to ``GET /v1/models`` (or ``GET /models`` as fallback) with HTTP 200.
+    Returns ``None`` if no server is found.
+
+    When *headless* is True, emits a JSONL event on stderr.
+    Otherwise prints to console.
+    """
+    import httpx
+
+    async def _probe() -> tuple[str, str] | None:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            for port, backend, name in _COMMON_PORTS:
+                url = f"http://localhost:{port}"
+                try:
+                    resp = await client.get(f"{url}/v1/models")
+                    if resp.status_code == 404:
+                        resp = await client.get(f"{url}/models")
+                    if resp.status_code == 200:
+                        return url, backend
+                except (httpx.ConnectError, httpx.TimeoutException):
+                    continue
+        return None
+
+    result = asyncio.run(_probe())
+    if result:
+        base_url, backend = result
+        port = int(base_url.split(":")[-1])
+        server_name = next(
+            (name for p, _, name in _COMMON_PORTS if p == port), "unknown"
+        )
+        if headless:
+            msg = {
+                "event": "server_discovered",
+                "base_url": base_url,
+                "backend": backend,
+                "server_type": server_name,
+                "port": port,
+            }
+            sys.stderr.write(json.dumps(msg) + "\n")
+            sys.stderr.flush()
+        elif console:
+            console.print(
+                f"  [bold green]✓[/] Auto-discovered [bold]{server_name}[/] "
+                f"at [cyan]{base_url}[/]"
+            )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +326,70 @@ def _headless_error(error_code: str, message: str, *, exit_code: int = 1) -> Non
     sys.stderr.write(json.dumps(msg) + "\n")
     sys.stderr.flush()
     sys.exit(exit_code)
+
+
+def _probe_server(
+    console: Console, base_url: str, api_key: str | None,
+    *, headless: bool = False,
+) -> None:
+    """Check if a server is reachable and responsive, then exit.
+
+    Useful for CI/CD pipelines and sparkrun recipes where the benchmark
+    step runs right after server startup — this lets the orchestrator
+    wait until the server is ready.
+
+    Exits 0 if the server responds to /v1/models, exit 1 otherwise.
+    """
+    import httpx
+
+    url = base_url.rstrip("/")
+    models_endpoint = f"{url}/v1/models"
+    if url.endswith("/v1"):
+        models_endpoint = f"{url}/models"
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    async def _check() -> httpx.Response:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(models_endpoint, headers=headers)
+            if resp.status_code == 404:
+                resp = await client.get(f"{url}/models", headers=headers)
+            resp.raise_for_status()
+            return resp
+
+    try:
+        resp = asyncio.run(_check())
+        data = resp.json()
+        model_ids = [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+    except Exception as exc:
+        if headless:
+            msg = {
+                "event": "probe_result",
+                "status": "failed",
+                "base_url": base_url,
+                "error": str(exc) or type(exc).__name__,
+            }
+            sys.stderr.write(json.dumps(msg) + "\n")
+            sys.stderr.flush()
+        else:
+            console.print(f"[bold red]✗[/] Server at {base_url} is not ready: {exc}")
+        sys.exit(1)
+
+    if headless:
+        msg = {
+            "event": "probe_result",
+            "status": "ready",
+            "base_url": base_url,
+            "models": model_ids,
+        }
+        sys.stderr.write(json.dumps(msg) + "\n")
+        sys.stderr.flush()
+    else:
+        console.print(f"[bold green]✓[/] Server at {base_url} is ready")
+        if model_ids:
+            console.print(f"  Models: {', '.join(model_ids)}")
+    sys.exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -916,8 +1046,12 @@ def main() -> None:
     conn.add_argument("--backend", default=None,
                       help="Backend label for reports: vllm, litellm, llamacpp "
                            "(all use the same OpenAI-compatible adapter; default: env/vllm)")
-    conn.add_argument("--base-url", default=None, help="Server base URL (default: from .env)")
+    conn.add_argument("--base-url", default=None,
+                      help="Server base URL (default: auto-discover on localhost, or from .env)")
     conn.add_argument("--api-key", default=None, help="API key")
+    conn.add_argument("--probe", action="store_true",
+                      help="Check if a server is reachable and exit "
+                           "(exit 0 = ready, exit 1 = not found)")
 
     # -- Sampling ----------------------------------------------------------
     sampling = parser.add_argument_group("sampling")
@@ -1121,9 +1255,9 @@ def main() -> None:
         _compare_runs(console, args.compare[0], args.compare[1])
         return
 
-    # Cascade: CLI flag → env var → fallback
+    # Cascade: CLI flag → env var → auto-discovery
     model = args.model or os.getenv("TOOL_EVAL_MODEL") or None
-    backend = args.backend or os.getenv("TOOL_EVAL_BACKEND", "vllm")
+    backend = args.backend or os.getenv("TOOL_EVAL_BACKEND", "")
     base_url = args.base_url or os.getenv("TOOL_EVAL_BASE_URL", "")
     api_key = args.api_key or os.getenv("TOOL_EVAL_API_KEY")
 
@@ -1134,8 +1268,36 @@ def main() -> None:
         if host:
             base_url = f"http://{host}:{port}" if port else f"http://{host}"
 
+    # Auto-discovery: probe localhost on common inference server ports
     if not base_url:
-        parser.error("--base-url is required (or set TOOL_EVAL_BASE_URL or TOOL_EVAL_HOST+TOOL_EVAL_PORT in .env)")
+        if not args.json:
+            console.print("\n[dim]  No --base-url provided, scanning localhost…[/]")
+        discovered = _discover_server(headless=args.json, console=console)
+        if discovered:
+            base_url, discovered_backend = discovered
+            if not backend:
+                backend = discovered_backend
+        else:
+            if args.json:
+                _headless_error(
+                    "no_server",
+                    "No inference server found on localhost. "
+                    "Tried ports: " + ", ".join(str(p) for p, _, _ in _COMMON_PORTS),
+                    exit_code=2,
+                )
+            parser.error(
+                "No inference server found on localhost. "
+                "Use --base-url or set TOOL_EVAL_BASE_URL in .env"
+            )
+
+    # Default backend if still unset
+    if not backend:
+        backend = "vllm"
+
+    # --probe: check if server is reachable and exit
+    if args.probe:
+        _probe_server(console, base_url, api_key, headless=args.json)
+        return
 
     # URL redaction for display (actual API calls use real base_url)
     display_url = _redact_url(base_url) if args.redact_url else base_url
@@ -1230,17 +1392,17 @@ def main() -> None:
         return
 
     # -- Warm-up --
-    if not args.no_warmup:
+    if not args.no_warmup and not args.json:
         _do_warmup(console, base_url, model, api_key)
 
     # -- Feature flags not yet wired into the run loop --
-    if args.llm_judge:
+    if args.llm_judge and not args.json:
         console.print(
             "\n  [bold yellow]⚠ --llm-judge:[/] The judge module is implemented "
             "(runner/judge.py) but not yet wired into the benchmark flow. "
             "Judge results will not be applied in this run.\n"
         )
-    if args.experimental_async:
+    if args.experimental_async and not args.json:
         console.print(
             "\n  [bold yellow]⚠ --experimental-async:[/] The async tool executor is "
             "implemented (runner/async_tools.py) but not yet integrated with "

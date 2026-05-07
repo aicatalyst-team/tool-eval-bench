@@ -26,7 +26,24 @@ All notable changes to `tool-eval-bench` are documented here.
 - **21 new tests** (`tests/test_api.py`) covering versioned envelope, Spark Arena
   field promotion, args schema validation, programmatic API invocation, JSONL
   progress callbacks, and `--json-file` output.
-  Total test count: **1,368**.
+- **Server auto-discovery** — when `--base-url` is omitted (and no env var is set),
+  the CLI probes localhost on common inference server ports (8000/vLLM, 8080/llama.cpp,
+  30000/SGLang, 4000/LiteLLM, 11434/Ollama, 5000/TGI) and auto-selects the first
+  responding server.  Backend label is also inferred from the discovered port.
+  In `--json` mode, emits a `server_discovered` JSONL event on stderr.
+- **`--probe` readiness check** — verify that a server is reachable and exit.
+  Exits 0 if the server responds to `/v1/models`, exit 1 otherwise.  Emits
+  a `probe_result` JSONL event in `--json` mode.  Useful for CI/CD pipelines
+  and sparkrun recipes where the benchmark runs right after server startup.
+- **Headless model auto-selection** — in `--json` mode, when multiple models
+  are served, the first model is auto-selected instead of blocking on
+  `input()`.  Emits a `model_auto_selected` JSONL event on stderr.
+- **Structured headless errors** — connection failures, HTTP errors, and
+  empty model lists emit JSONL error events on stderr in `--json` mode
+  instead of Rich-formatted console markup.
+- **Differentiated exit codes** — exit 2 for connection/HTTP errors,
+  exit 3 for no-models-found (previously all exit 1).
+  Total test count: **1,380**.
 
 ### Changed
 
@@ -34,6 +51,12 @@ All notable changes to `tool-eval-bench` are documented here.
   constructor arguments accept `None` to skip SQLite and Markdown writes.  This
   supports the `persist=False` path in the public API without breaking existing
   CLI behavior (which always passes concrete instances).
+- **Warmup and WIP warnings suppressed in `--json` mode** — the server warmup
+  request and `--llm-judge`/`--experimental-async` warnings no longer print to
+  stdout when `--json` is active, keeping stdout clean for JSON parsing.
+- **`.env` isolation verified** — `load_dotenv(override=False)` ensures that
+  environment variables set by the calling process (e.g., an agent) are never
+  overridden by a `.env` file.  CLI flags take priority over env vars.
 
 ## [1.5.1] — 2026-05-04
 

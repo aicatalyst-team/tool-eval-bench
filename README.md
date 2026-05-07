@@ -94,7 +94,16 @@ pip install -e '.[dev,perf]'
 
 ### Configuration
 
-Create a `.env` file (or set environment variables):
+**Zero-config mode** — if a server is running on localhost at a standard port,
+no configuration is needed:
+
+```bash
+# Just run it — auto-discovers vLLM (:8000), llama.cpp (:8080), SGLang (:30000),
+# LiteLLM (:4000), Ollama (:11434), or TGI (:5000)
+tool-eval-bench --short
+```
+
+For remote servers or non-standard ports, create a `.env` file (or set environment variables):
 
 ```bash
 # Option A: full URL
@@ -108,9 +117,19 @@ TOOL_EVAL_MODEL=         # optional: auto-detected from /v1/models
 TOOL_EVAL_API_KEY=       # optional
 ```
 
+> **Priority order**: CLI flags > environment variables > `.env` file > auto-discovery.
+> `load_dotenv(override=False)` ensures that env vars set by a calling process
+> (e.g., an agent or sparkrun) are never overridden by a stale `.env` file.
+
 ### Run the benchmark
 
 ```bash
+# Zero-config — auto-discovers server and model on localhost
+tool-eval-bench --short
+
+# Check server readiness first (useful in CI/sparkrun recipes)
+tool-eval-bench --probe
+
 # Smoke test — quick validation with 5 scenarios
 tool-eval-bench --scenarios TC-01 TC-02 TC-03 TC-04 TC-05
 
@@ -149,6 +168,7 @@ tool-eval-bench --model gemma4 --backend vllm --base-url http://localhost:8080
 --backend BACKEND      Backend: vllm, litellm, llamacpp (default: from .env or vllm)
 --base-url URL         Server base URL (default: from .env)
 --api-key KEY          API key (optional)
+--probe                Check server reachability and exit (0 = ready, 1 = not found)
 --temperature FLOAT    Temperature (default: 0.0)
 --no-think             Disable thinking/reasoning (sets enable_thinking=false via chat_template_kwargs)
 --top-p P              Top-p (nucleus) sampling value (e.g. 0.9)

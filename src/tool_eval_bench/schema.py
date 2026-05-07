@@ -31,6 +31,12 @@ ARGS_SCHEMA: list[dict[str, Any]] = [
         "choices": ["vllm", "litellm", "llamacpp"],
         "description": "Backend label for reports",
     },
+    {
+        "name": "probe",
+        "type": "bool",
+        "default": False,
+        "description": "Check server reachability and exit (0 = ready, 1 = not found)",
+    },
     # -- Sampling --
     {
         "name": "temperature",
