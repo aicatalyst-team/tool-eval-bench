@@ -431,14 +431,11 @@ class TestServerDiscovery:
     def test_discovers_vllm_on_8000(self, capsys):
         from tool_eval_bench.cli.bench import _discover_server
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-
         with patch("tool_eval_bench.cli.bench.asyncio") as mock_asyncio:
-            # The async function returns a coroutine result
-            async def fake_probe():
-                return ("http://localhost:8000", "vllm")
-            mock_asyncio.run.return_value = ("http://localhost:8000", "vllm")
+            # Inner _probe returns (url, backend, server_name, port)
+            mock_asyncio.run.return_value = (
+                "http://localhost:8000", "vllm", "vLLM", 8000,
+            )
 
             result = _discover_server(headless=True)
 
@@ -452,6 +449,7 @@ class TestServerDiscovery:
         event = json.loads(captured.err.strip())
         assert event["event"] == "server_discovered"
         assert event["port"] == 8000
+        assert event["server_type"] == "vLLM"
 
     def test_returns_none_when_no_server(self):
         from tool_eval_bench.cli.bench import _discover_server
@@ -464,13 +462,15 @@ class TestServerDiscovery:
         assert result is None
 
     def test_common_ports_list(self):
-        from tool_eval_bench.cli.bench import _COMMON_PORTS
+        from tool_eval_bench.cli.bench import _DISCOVERY_PORTS
 
-        ports = [p for p, _, _ in _COMMON_PORTS]
+        ports = [p for p, _, _ in _DISCOVERY_PORTS]
         # vLLM default
         assert 8000 in ports
-        # llama.cpp default
+        # llama.cpp / alt vLLM ports
         assert 8080 in ports
+        assert 8081 in ports
+        assert 8082 in ports
         # SGLang default
         assert 30000 in ports
         # LiteLLM default
@@ -555,3 +555,94 @@ class TestJsonStdoutCleanliness:
         args.no_warmup = False
         args.json = False
         assert (not args.no_warmup and not args.json)
+
+
+# ---------------------------------------------------------------------------
+# BenchmarkService persistence bypass (regression test)
+# ---------------------------------------------------------------------------
+
+class TestServicePersistence:
+    """Verify that repo=None / reporter=None correctly skips persistence."""
+
+    def test_none_repo_is_not_replaced(self):
+        from tool_eval_bench.runner.service import BenchmarkService
+
+        service = BenchmarkService(repo=None, reporter=None)
+        assert service.repo is None
+        assert service.reporter is None
+
+    def test_default_repo_created_when_omitted(self):
+        from tool_eval_bench.runner.service import BenchmarkService
+        from tool_eval_bench.storage.db import RunRepository
+
+        service = BenchmarkService()
+        assert isinstance(service.repo, RunRepository)
+        service.repo.close()
+
+
+# ---------------------------------------------------------------------------
+# Backend detection from response headers
+# ---------------------------------------------------------------------------
+
+class TestBackendDetection:
+    """Test _detect_backend_from_response."""
+
+    def test_detects_vllm_header(self):
+        from tool_eval_bench.cli.bench import _detect_backend_from_response
+
+        resp = MagicMock()
+        resp.headers = {"server": "vllm/0.8.5"}
+        backend, label = _detect_backend_from_response(resp, 8080)
+        assert backend == "vllm"
+        assert label == "vLLM"
+
+    def test_detects_llamacpp_header(self):
+        from tool_eval_bench.cli.bench import _detect_backend_from_response
+
+        resp = MagicMock()
+        resp.headers = {"server": "llama.cpp/server"}
+        backend, label = _detect_backend_from_response(resp, 8080)
+        assert backend == "llamacpp"
+        assert label == "llama.cpp"
+
+    def test_detects_sglang_header(self):
+        from tool_eval_bench.cli.bench import _detect_backend_from_response
+
+        resp = MagicMock()
+        resp.headers = {"server": "sglang/0.4.6"}
+        backend, label = _detect_backend_from_response(resp, 30000)
+        assert backend == "vllm"  # Same adapter
+        assert label == "SGLang"
+
+    def test_falls_back_to_port_hint(self):
+        from tool_eval_bench.cli.bench import _detect_backend_from_response
+
+        resp = MagicMock()
+        resp.headers = {"server": "uvicorn"}  # Generic
+        backend, label = _detect_backend_from_response(resp, 4000)
+        assert backend == "litellm"
+        assert label == "LiteLLM"
+
+    def test_unknown_port_returns_generic(self):
+        from tool_eval_bench.cli.bench import _detect_backend_from_response
+
+        resp = MagicMock()
+        resp.headers = {}
+        backend, label = _detect_backend_from_response(resp, 9999)
+        assert backend == "vllm"
+        assert label == "inference server"
+
+
+# ---------------------------------------------------------------------------
+# Async re-export in __init__.py
+# ---------------------------------------------------------------------------
+
+class TestAsyncReExport:
+    """Verify that the top-level run_benchmark is properly async."""
+
+    def test_reexport_is_coroutine_function(self):
+        import inspect
+
+        from tool_eval_bench import run_benchmark
+
+        assert inspect.iscoroutinefunction(run_benchmark)

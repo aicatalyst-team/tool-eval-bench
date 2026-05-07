@@ -1,0 +1,203 @@
+# SKILL.md — Agent Guide for tool-eval-bench
+
+> This file helps AI agents use tool-eval-bench correctly in automated
+> workflows.  Read this before invoking the tool.
+
+## What this tool does
+
+`tool-eval-bench` evaluates LLM tool-calling quality using 69 deterministic
+scenarios across 15 categories.  It produces a 0–100 score with per-category
+breakdowns, safety warnings, and full conversation traces.
+
+## Quick start (zero-config)
+
+If an inference server is running on localhost at a standard port, no
+configuration is needed:
+
+```bash
+# Auto-discovers server and model, runs core 15 scenarios
+tool-eval-bench --short --json
+
+# Full 69 scenarios
+tool-eval-bench --json
+```
+
+Auto-discovery probes these ports in order:
+8000 (vLLM), 8080, 8081, 8082, 30000 (SGLang), 4000 (LiteLLM),
+3000, 11434 (Ollama), 5000 (TGI).
+
+## Headless / JSON mode
+
+Always use `--json` for machine-readable output.  In this mode:
+
+- **stdout** contains only the JSON result envelope
+- **stderr** contains JSONL progress events (one per line)
+- Interactive prompts are skipped (first model is auto-selected)
+- Warmup and informational banners are suppressed
+
+```bash
+# JSON to stdout
+tool-eval-bench --json --short
+
+# JSON to file (keeps stdout clean for logging)
+tool-eval-bench --json-file results.json --short
+```
+
+## Server readiness check
+
+Use `--probe` to wait for the server to be ready before benchmarking:
+
+```bash
+tool-eval-bench --probe --base-url http://localhost:8000
+# Exit 0 = ready, exit 1 = not reachable
+```
+
+In a script:
+```bash
+until tool-eval-bench --probe --json 2>/dev/null; do
+  sleep 5
+done
+tool-eval-bench --json --short
+```
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0    | Success |
+| 1    | Runtime error or server not ready (--probe) |
+| 2    | Connection/HTTP error (server unreachable, bad response) |
+| 3    | No models found on server |
+
+## Specifying the server
+
+Priority order (highest wins):
+1. `--base-url` CLI flag
+2. `TOOL_EVAL_BASE_URL` environment variable
+3. `TOOL_EVAL_HOST` + `TOOL_EVAL_PORT` environment variables
+4. `.env` file (never overrides existing env vars)
+5. Auto-discovery on localhost
+
+```bash
+# Explicit URL
+tool-eval-bench --base-url http://192.168.1.5:8000 --json --short
+
+# Via environment
+export TOOL_EVAL_BASE_URL=http://192.168.1.5:8000
+tool-eval-bench --json --short
+```
+
+## Key CLI flags
+
+| Flag | Purpose |
+|------|---------|
+| `--json` | Machine-readable JSON output |
+| `--json-file PATH` | Write JSON to file instead of stdout |
+| `--short` | Run core 15 scenarios (~2 min) instead of full 69 |
+| `--probe` | Check server readiness and exit |
+| `--base-url URL` | Server endpoint |
+| `--model NAME` | Model name (auto-detected if omitted) |
+| `--seed N` | Random seed for reproducibility |
+| `--temperature F` | Sampling temperature (default: 0.0 = greedy) |
+| `--timeout F` | Per-request timeout in seconds (default: 60) |
+| `--no-warmup` | Skip server warm-up request |
+| `--hardmode` | Include 5 extra hard-mode scenarios |
+| `--categories A B K` | Run only specific categories (A–P) |
+| `--scenarios TC-01 TC-07` | Run specific scenario IDs |
+| `--perf` | Also run throughput benchmark |
+| `--trials N` | Run N trials for statistical analysis |
+
+## Understanding the JSON output
+
+```jsonc
+{
+  "schema_version": "1",
+  "tool_eval_bench_version": "1.5.1",
+  "final_score": 85,           // 0–100, the headline number
+  "rating": "★★★★ Good",       // star rating with label
+  "safety_warnings": [],       // empty = safe; non-empty = failures in safety scenarios
+  "deployability": 78,         // quality × speed composite (if latency data available)
+  "responsiveness": 65,        // latency score 0–100
+  "total_scenarios": 69,
+  "run_id": "2026-05-07T...",
+  "config": { ... },
+  "scores": {
+    "final_score": 85,
+    "category_scores": [ ... ],
+    "scenario_results": [ ... ]
+  }
+}
+```
+
+## JSONL progress events (stderr)
+
+Each line on stderr is a JSON object:
+
+```jsonc
+{"event": "server_discovered", "base_url": "http://localhost:8000", "backend": "vllm", ...}
+{"event": "model_auto_selected", "model": "Qwen/Qwen3-8B", ...}
+{"event": "scenario_start", "scenario_id": "TC-01", "index": 0, "total": 15}
+{"event": "scenario_result", "scenario_id": "TC-01", "status": "pass", "points": 2, ...}
+{"event": "benchmark_complete", "json_file": "results.json", "final_score": 85}
+{"event": "error", "error": "no_server", "message": "..."}
+```
+
+## Programmatic API (Python)
+
+```python
+import asyncio
+from tool_eval_bench.api import run_benchmark
+
+result = asyncio.run(run_benchmark(
+    model="Qwen/Qwen3-8B",
+    base_url="http://localhost:8000",
+    short=True,
+    persist=False,  # skip SQLite/Markdown artifacts
+))
+
+print(result["final_score"])  # 85
+```
+
+## Interpreting results for automated decisions
+
+```python
+import json, subprocess
+
+r = subprocess.run(
+    ["tool-eval-bench", "--json", "--short"],
+    capture_output=True, text=True,
+)
+if r.returncode != 0:
+    print("Benchmark failed")
+else:
+    data = json.loads(r.stdout)
+    score = data["final_score"]
+    warnings = data.get("safety_warnings", [])
+
+    if warnings:
+        print(f"UNSAFE: {len(warnings)} safety failures")
+    elif score >= 75:
+        print(f"GOOD: score {score}")
+    elif score >= 60:
+        print(f"ADEQUATE: score {score}")
+    else:
+        print(f"POOR: score {score}")
+```
+
+## Score tiers
+
+| Score | Rating | Meaning |
+|-------|--------|---------|
+| 90–100 | ★★★★★ Excellent | Production-ready tool calling |
+| 75–89 | ★★★★ Good | Reliable for most agentic tasks |
+| 60–74 | ★★★ Adequate | Works but has notable gaps |
+| 40–59 | ★★ Weak | Significant tool-calling issues |
+| 0–39 | ★ Poor | Not suitable for agentic use |
+
+## Common pitfalls
+
+1. **Don't parse stderr as JSON** — it's JSONL (one object per line), not a single JSON document.
+2. **Don't assume model is auto-detected** — if the server has 0 models loaded, exit code is 3.
+3. **Use `--short` for fast checks** — the full suite takes 10–20 minutes; core 15 takes ~2 minutes.
+4. **Timeout with thinking models** — models like Qwen3 with thinking enabled may need `--timeout 120`.
+5. **Warmup is automatic** — the first request primes the server. Use `--no-warmup` only if already warmed.

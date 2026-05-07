@@ -89,15 +89,46 @@ def _redact_url(url: str) -> str:
 # Server auto-discovery
 # ---------------------------------------------------------------------------
 
-# Common inference server ports: (port, backend_hint, server_name)
-_COMMON_PORTS: list[tuple[int, str, str]] = [
+# Ports to scan on localhost.  Order matters — first match wins.
+# The backend_hint is a *guess* used only when the server doesn't identify
+# itself via response headers.  Ports used by multiple backends (8080, 8081)
+# get a generic "vllm" hint that the user can override with --backend.
+_DISCOVERY_PORTS: list[tuple[int, str, str]] = [
+    # (port, backend_hint, human_label)
     (8000, "vllm", "vLLM"),
-    (8080, "llamacpp", "llama.cpp / llama-server"),
+    (8080, "vllm", "inference server"),       # vLLM, llama.cpp, or custom
+    (8081, "vllm", "inference server"),       # common alt port
+    (8082, "vllm", "inference server"),       # common alt port
     (30000, "vllm", "SGLang"),
     (4000, "litellm", "LiteLLM"),
+    (3000, "litellm", "LiteLLM"),
     (11434, "litellm", "Ollama"),
     (5000, "vllm", "TGI"),
 ]
+
+
+def _detect_backend_from_response(resp: Any, port: int) -> tuple[str, str]:
+    """Try to identify the backend from response headers.
+
+    vLLM sets ``server: vllm``, SGLang sets ``server: sglang``,
+    llama.cpp sets ``server: llama.cpp``.  Falls back to port-based hint.
+    """
+    server_header = ""
+    if hasattr(resp, "headers"):
+        server_header = resp.headers.get("server", "").lower()
+
+    if "vllm" in server_header:
+        return "vllm", "vLLM"
+    if "sglang" in server_header:
+        return "vllm", "SGLang"  # SGLang uses OpenAI-compat, same adapter
+    if "llama" in server_header:
+        return "llamacpp", "llama.cpp"
+
+    # Fall back to port-based hint
+    for p, backend, label in _DISCOVERY_PORTS:
+        if p == port:
+            return backend, label
+    return "vllm", "inference server"
 
 
 def _discover_server(
@@ -109,32 +140,33 @@ def _discover_server(
     to ``GET /v1/models`` (or ``GET /models`` as fallback) with HTTP 200.
     Returns ``None`` if no server is found.
 
+    The backend is identified from the server's response headers when
+    possible (vLLM, SGLang, and llama.cpp advertise themselves), falling
+    back to a port-based guess.
+
     When *headless* is True, emits a JSONL event on stderr.
     Otherwise prints to console.
     """
     import httpx
 
-    async def _probe() -> tuple[str, str] | None:
+    async def _probe() -> tuple[str, str, str, int] | None:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            for port, backend, name in _COMMON_PORTS:
+            for port, _hint, _label in _DISCOVERY_PORTS:
                 url = f"http://localhost:{port}"
                 try:
                     resp = await client.get(f"{url}/v1/models")
                     if resp.status_code == 404:
                         resp = await client.get(f"{url}/models")
                     if resp.status_code == 200:
-                        return url, backend
+                        backend, server_name = _detect_backend_from_response(resp, port)
+                        return url, backend, server_name, port
                 except (httpx.ConnectError, httpx.TimeoutException):
                     continue
         return None
 
     result = asyncio.run(_probe())
     if result:
-        base_url, backend = result
-        port = int(base_url.split(":")[-1])
-        server_name = next(
-            (name for p, _, name in _COMMON_PORTS if p == port), "unknown"
-        )
+        base_url, backend, server_name, port = result
         if headless:
             msg = {
                 "event": "server_discovered",
@@ -150,7 +182,8 @@ def _discover_server(
                 f"  [bold green]✓[/] Auto-discovered [bold]{server_name}[/] "
                 f"at [cyan]{base_url}[/]"
             )
-    return result
+        return base_url, backend
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -342,19 +375,16 @@ def _probe_server(
     """
     import httpx
 
-    url = base_url.rstrip("/")
-    models_endpoint = f"{url}/v1/models"
-    if url.endswith("/v1"):
-        models_endpoint = f"{url}/models"
+    from tool_eval_bench.utils.urls import models_url
+
+    endpoint = models_url(base_url)
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     async def _check() -> httpx.Response:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(models_endpoint, headers=headers)
-            if resp.status_code == 404:
-                resp = await client.get(f"{url}/models", headers=headers)
+            resp = await client.get(endpoint, headers=headers)
             resp.raise_for_status()
             return resp
 
@@ -1282,7 +1312,7 @@ def main() -> None:
                 _headless_error(
                     "no_server",
                     "No inference server found on localhost. "
-                    "Tried ports: " + ", ".join(str(p) for p, _, _ in _COMMON_PORTS),
+                    "Tried ports: " + ", ".join(str(p) for p, _, _ in _DISCOVERY_PORTS),
                     exit_code=2,
                 )
             parser.error(
@@ -2392,7 +2422,7 @@ def _emit_json_output(data: dict[str, Any], *, json_file: str | None = None) -> 
         msg = {
             "event": "benchmark_complete",
             "json_file": str(out),
-            "final_score": envelope.get("scores", {}).get("final_score"),
+            "final_score": envelope.get("final_score"),
         }
         sys.stderr.write(json.dumps(msg) + "\n")
         sys.stderr.flush()

@@ -30,13 +30,22 @@ _SUPPORTED_BACKENDS = {"vllm", "litellm", "llamacpp", "llama.cpp", "llama_cpp"}
 
 
 class BenchmarkService:
+    _SENTINEL = object()
+
     def __init__(
         self,
-        repo: RunRepository | None = None,
-        reporter: MarkdownReporter | None = None,
+        repo: RunRepository | None = _SENTINEL,  # type: ignore[assignment]
+        reporter: MarkdownReporter | None = _SENTINEL,  # type: ignore[assignment]
     ) -> None:
-        self.repo = repo or RunRepository()
-        self.reporter = reporter or MarkdownReporter()
+        # Distinguish "not provided" (create defaults) from "explicitly None"
+        # (skip persistence).  The previous ``repo or RunRepository()`` pattern
+        # silently defeated ``persist=False`` by replacing None with a default.
+        self.repo: RunRepository | None = (
+            RunRepository() if repo is self._SENTINEL else repo
+        )
+        self.reporter: MarkdownReporter | None = (
+            MarkdownReporter() if reporter is self._SENTINEL else reporter
+        )
 
     def _adapter_for(self, backend: str) -> BackendAdapter:
         backend_l = backend.lower()
