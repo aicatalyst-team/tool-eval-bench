@@ -1331,3 +1331,303 @@ class TestDashboardSpecBadge:
         )
         text = str(_efficiency_insight(delta))
         assert "MTP" in text
+
+
+# ---------------------------------------------------------------------------
+# ServerSpecInfo and probe_server_spec_info
+# ---------------------------------------------------------------------------
+
+
+class TestServerSpecInfo:
+    """Test the ServerSpecInfo dataclass and probe function."""
+
+    def test_default_values(self):
+        from tool_eval_bench.runner.spec_live import ServerSpecInfo
+        info = ServerSpecInfo()
+        assert info.spec_method is None
+        assert info.draft_model_name is None
+        assert info.target_model_name is None
+        assert info.num_speculative_tokens is None
+
+    def test_fields_populated(self):
+        from tool_eval_bench.runner.spec_live import ServerSpecInfo
+        info = ServerSpecInfo(
+            spec_method="dflash",
+            draft_model_name="Qwen/Qwen3-0.6B",
+            target_model_name="Qwen/Qwen3-35B",
+            num_speculative_tokens=5,
+        )
+        assert info.spec_method == "dflash"
+        assert info.draft_model_name == "Qwen/Qwen3-0.6B"
+        assert info.target_model_name == "Qwen/Qwen3-35B"
+        assert info.num_speculative_tokens == 5
+
+
+@pytest.mark.asyncio
+class TestProbeServerSpecInfo:
+    """Test probe_server_spec_info against mock HTTP responses."""
+
+    async def test_detects_draft_from_v1_models(self):
+        """When /v1/models returns 2 models, the non-primary is detected as draft."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from tool_eval_bench.runner.spec_live import probe_server_spec_info
+
+        # Mock httpx.AsyncClient to return a models response with 2 models
+        mock_response_models = MagicMock()
+        mock_response_models.status_code = 200
+        mock_response_models.json.return_value = {
+            "object": "list",
+            "data": [
+                {"id": "Qwen/Qwen3-35B", "object": "model"},
+                {"id": "Qwen/Qwen3-0.6B", "object": "model"},
+            ],
+        }
+
+        mock_response_version = MagicMock()
+        mock_response_version.status_code = 404  # no /version
+
+        async def mock_get(url, **kwargs):
+            if "/models" in url:
+                return mock_response_models
+            return mock_response_version
+
+        mock_client = AsyncMock()
+        mock_client.get = mock_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("tool_eval_bench.runner.spec_live.httpx.AsyncClient", return_value=mock_client):
+            info = await probe_server_spec_info(
+                "http://localhost:8000/v1",
+                primary_model="Qwen/Qwen3-35B",
+            )
+
+        assert info.draft_model_name == "Qwen/Qwen3-0.6B"
+        assert info.target_model_name == "Qwen/Qwen3-35B"
+        assert info.spec_method == "draft_model"
+
+    async def test_probe_handles_connection_failure(self):
+        """probe_server_spec_info should not raise on connection errors."""
+        from tool_eval_bench.runner.spec_live import probe_server_spec_info
+
+        # Point to a non-existent server
+        info = await probe_server_spec_info(
+            "http://localhost:1",  # unreachable
+            primary_model="test",
+        )
+        # Should return default ServerSpecInfo, not raise
+        assert info.spec_method is None
+        assert info.draft_model_name is None
+
+
+# ---------------------------------------------------------------------------
+# Dashboard with ServerSpecInfo
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardWithServerSpecInfo:
+    """Test dashboard rendering with ServerSpecInfo for draft model display."""
+
+    def _make_delta(self, **kwargs) -> SpecLiveDelta:
+        defaults = dict(
+            elapsed_s=1.0,
+            had_activity=True,
+            cumulative_acceptance_rate=0.30,
+            cumulative_acceptance_length=2.5,
+            cumulative_draft_window=5.0,
+            acceptance_rate=0.30,
+            accepted_tps=8.0,
+            drafted_tps=14.0,
+            prompt_tps=2500.0,
+            generation_tps=10.5,
+            gpu_cache_pct=3.4,
+            running_reqs=1,
+            waiting_reqs=0,
+            prefix_cache_hit_pct=0.0,
+            per_position_rates={},
+            total_accepted=1500,
+            total_drafted=5000,
+            total_drafts=1000,
+            spec_method="dflash",
+            num_spec_tokens=5,
+        )
+        defaults.update(kwargs)
+        return SpecLiveDelta(**defaults)
+
+    def _render(self, panel) -> str:
+        from rich.console import Console
+        from io import StringIO
+        out = StringIO()
+        Console(file=out, width=120, no_color=True).print(panel)
+        return out.getvalue()
+
+    def test_draft_model_from_server_spec_info(self):
+        """ServerSpecInfo draft model name shown in header."""
+        from tool_eval_bench.cli.spec_live_display import _build_dashboard
+        from tool_eval_bench.runner.spec_live import ServerSpecInfo
+
+        info = ServerSpecInfo(
+            draft_model_name="Qwen/Qwen3-0.6B",
+            spec_method="dflash",
+        )
+        delta = self._make_delta()
+        history = deque([delta] * 5, maxlen=60)
+        panel = _build_dashboard(
+            delta, history, time.time() - 30,
+            "Qwen/Qwen3-35B", "http://localhost:8000/metrics", 30,
+            server_spec_info=info,
+        )
+        text = self._render(panel)
+        assert "Qwen/Qwen3-0.6B" in text
+
+    def test_draft_model_from_server_spec_info_preferred_over_prometheus(self):
+        """ServerSpecInfo takes priority over Prometheus label heuristic."""
+        from tool_eval_bench.cli.spec_live_display import _build_dashboard
+        from tool_eval_bench.runner.spec_live import ServerSpecInfo
+
+        info = ServerSpecInfo(draft_model_name="real-draft-model")
+        delta = self._make_delta()
+        delta.model_names = {"Qwen/Qwen3-35B", "prom-draft-model"}
+        history = deque([delta] * 5, maxlen=60)
+        panel = _build_dashboard(
+            delta, history, time.time() - 30,
+            "Qwen/Qwen3-35B", "http://localhost:8000/metrics", 30,
+            server_spec_info=info,
+        )
+        text = self._render(panel)
+        assert "real-draft-model" in text
+        # Prometheus heuristic draft should NOT appear when ServerSpecInfo has one
+        assert "prom-draft-model" not in text
+
+    def test_reset_flash_shown(self):
+        """Reset flash banner appears when reset_flash=True."""
+        from tool_eval_bench.cli.spec_live_display import _build_dashboard
+
+        delta = self._make_delta()
+        history = deque([delta] * 5, maxlen=60)
+        panel = _build_dashboard(
+            delta, history, time.time() - 30,
+            "TestModel", "http://localhost:8000/metrics", 30,
+            reset_flash=True,
+        )
+        text = self._render(panel)
+        assert "Session reset" in text
+
+    def test_reset_flash_hidden_by_default(self):
+        """Reset flash not shown when reset_flash=False (default)."""
+        from tool_eval_bench.cli.spec_live_display import _build_dashboard
+
+        delta = self._make_delta()
+        history = deque([delta] * 5, maxlen=60)
+        panel = _build_dashboard(
+            delta, history, time.time() - 30,
+            "TestModel", "http://localhost:8000/metrics", 30,
+        )
+        text = self._render(panel)
+        assert "Session reset" not in text
+
+    def test_subtitle_shows_ctrl_r_hint(self):
+        """Subtitle includes Ctrl+R reset hint."""
+        from tool_eval_bench.cli.spec_live_display import _build_dashboard
+
+        delta = self._make_delta()
+        history = deque([delta] * 5, maxlen=60)
+        panel = _build_dashboard(
+            delta, history, time.time() - 30,
+            "TestModel", "http://localhost:8000/metrics", 30,
+        )
+        text = self._render(panel)
+        assert "Ctrl+R" in text
+
+    def test_waiting_state_shows_ctrl_r_hint(self):
+        """Waiting/connecting state also shows Ctrl+R hint."""
+        from tool_eval_bench.cli.spec_live_display import _build_dashboard
+
+        panel = _build_dashboard(
+            None, deque(maxlen=60), time.time() - 5,
+            "TestModel", "http://localhost:8000/metrics", 5,
+        )
+        text = self._render(panel)
+        assert "Ctrl+R" in text
+
+
+# ---------------------------------------------------------------------------
+# High-k per-position scaling
+# ---------------------------------------------------------------------------
+
+
+class TestHighKPositionScaling:
+    """Test per-position bars with k > 16 (high speculative token counts)."""
+
+    def test_twenty_positions(self):
+        """20 positions should render without errors."""
+        from tool_eval_bench.cli.spec_live_display import _position_bars_horizontal
+        from rich.console import Console
+        from io import StringIO
+
+        rates = {i: max(0.02, 0.95 - i * 0.04) for i in range(20)}
+        table = _position_bars_horizontal(rates, inner_w=120)
+        out = StringIO()
+        Console(file=out, width=120, no_color=True).print(table)
+        text = out.getvalue()
+        for i in range(20):
+            assert f"p{i}" in text
+
+    def test_thirty_two_positions(self):
+        """32 positions (extreme k) should wrap to multiple rows."""
+        from tool_eval_bench.cli.spec_live_display import _position_bars_horizontal
+        from rich.console import Console
+        from io import StringIO
+
+        rates = {i: max(0.01, 0.90 - i * 0.025) for i in range(32)}
+        table = _position_bars_horizontal(rates, inner_w=120)
+        out = StringIO()
+        Console(file=out, width=120, no_color=True).print(table)
+        text = out.getvalue()
+        # All 32 positions visible
+        for i in range(32):
+            assert f"p{i}" in text
+        # Must wrap (at 120 cols, ~8 positions per row → 4 rows)
+        lines = [line for line in text.strip().split("\n") if line.strip()]
+        assert len(lines) >= 4
+
+    def test_dashboard_with_high_k_positions(self):
+        """Full dashboard renders correctly with 20 per-position rates."""
+        from tool_eval_bench.cli.spec_live_display import _build_dashboard
+        from rich.console import Console
+        from io import StringIO
+
+        delta = SpecLiveDelta(
+            elapsed_s=1.0,
+            had_activity=True,
+            cumulative_acceptance_rate=0.40,
+            cumulative_acceptance_length=8.0,
+            cumulative_draft_window=20.0,
+            accepted_tps=12.0,
+            drafted_tps=30.0,
+            prompt_tps=2000.0,
+            generation_tps=15.0,
+            gpu_cache_pct=5.0,
+            running_reqs=1,
+            waiting_reqs=0,
+            prefix_cache_hit_pct=0.0,
+            per_position_rates={i: max(0.03, 0.85 - i * 0.04) for i in range(20)},
+            total_accepted=3000,
+            total_drafted=7500,
+            total_drafts=375,
+            num_spec_tokens=20,
+        )
+        history = deque([delta] * 10, maxlen=60)
+        panel = _build_dashboard(
+            delta, history, time.time() - 30,
+            "TestModel", "http://localhost:8000/metrics", 30,
+        )
+        out = StringIO()
+        Console(file=out, width=120, no_color=True).print(panel)
+        text = out.getvalue()
+        assert "k=20" in text
+        assert "p0" in text
+        assert "p19" in text
+        assert "Per-Position" in text
+

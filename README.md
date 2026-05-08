@@ -211,7 +211,7 @@ tool-eval-bench --model gemma4 --backend vllm --base-url http://localhost:8080
 --export FORMAT        Export all results as csv or json
 --export-output FILE   Output file for --export (default: stdout)
 -i, --interactive      Launch interactive TUI (requires: pip install tool-eval-bench[tui])
---spec-live            Start live speculative decoding monitor (Ctrl+C to stop)
+--spec-live            Start live speculative decoding monitor (Ctrl+R to reset, Ctrl+C to stop)
 --spec-live-interval S Poll interval for --spec-live in seconds (default: 1.0)
 ```
 
@@ -328,8 +328,9 @@ tool-eval-bench --spec-live --metrics-url http://vllm:8080/metrics
 The dashboard shows:
 - **Acceptance rate gauge** — color-coded 0–100% bar with efficiency rating
 - **Draft efficiency gauge** — τ/window utilization with auto-tuning hints
-- **Method detection badge** — shows the speculative decoding method in the header (`⟨ Draft Flash ⟩`, `⟨ MTP ⟩`, `⟨ EAGLE ⟩`, etc.).  Auto-detects from Prometheus text when possible; use `--spec-method` to set explicitly since most servers don't expose the method in metrics.
-- **Per-position acceptance bars** — full-width horizontal chart showing per-position acceptance rate decay (`p0 ████ 83%  p1 ███ 64% ...`) with decay analysis.  Supports up to 16 positions and auto-wraps to multiple rows on narrow terminals.
+- **Method detection badge** — shows the speculative decoding method in the header (`⟨ Draft Flash ⟩`, `⟨ MTP ⟩`, `⟨ EAGLE ⟩`, etc.).  Auto-detects from `/v1/models` and `/version` API probing at startup, with Prometheus text scanning as fallback.  Use `--spec-method` to override.
+- **Draft model name in header** — when the server lists multiple models in `/v1/models` (target + draft), the draft model name is shown: `▸ Qwen3-35B  ← Qwen3-0.6B`.  If vLLM's `/version` endpoint exposes `speculative_config`, the method and `num_speculative_tokens` are also extracted.
+- **Per-position acceptance bars** — full-width horizontal chart showing per-position acceptance rate decay (`p0 ████ 83%  p1 ███ 64% ...`) with decay analysis.  Supports up to 64 positions and auto-wraps to multiple rows on narrow terminals.
 - **Throughput sparklines** — rolling 60-second history of accept rate, gen t/s, accepted t/s, and waste ratio with min/max annotations
 - **Rolling averages** — session-level mean α, gen t/s, and accepted t/s (visible immediately with 0.0 initial values)
 - **Engine status** — GPU KV cache, prefix cache hit rate, running/waiting requests, prompt t/s
@@ -337,7 +338,7 @@ The dashboard shows:
 
 All metrics are **session-relative** — they start from zero when the dashboard opens and show only what happened during the current monitoring session, letting you observe how different workloads actually perform.
 
-On exit (Ctrl+C), a session summary panel shows aggregate statistics.
+Press **Ctrl+R** to reset all session counters and history without restarting.  This lets you switch workloads and measure each independently.  Press **Ctrl+C** to exit; a session summary panel shows aggregate statistics.
 
 | Flag | Default | Purpose |
 |---|---|---|

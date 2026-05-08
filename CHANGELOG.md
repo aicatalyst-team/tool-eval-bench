@@ -2,6 +2,31 @@
 
 All notable changes to `tool-eval-bench` are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Ctrl+R session reset in `--spec-live`** — press Ctrl+R to reset all session
+  counters, sparkline history, and sticky gauges without restarting the monitor.
+  A brief "⟳ Session reset" flash banner confirms the reset for 3 poll cycles.
+  Useful for isolating workload-specific measurements (e.g., switching prompts
+  mid-session).  The helper text at the bottom now shows `Ctrl+R reset · Ctrl+C exit`.
+- **Reliable draft model detection** — `--spec-live` now probes `/v1/models`
+  and `/version` at startup to detect draft model names and speculative decoding
+  configuration.  Previously relied on Prometheus label heuristics that rarely
+  matched real vLLM deployments.  When `/v1/models` returns 2+ model entries,
+  the non-primary model is identified as the draft model and displayed in the
+  header (`▸ Qwen3-35B  ← Qwen3-0.6B`).  If vLLM's `/version` endpoint
+  exposes `speculative_config`, the method and `num_speculative_tokens` are also
+  extracted.  The `--spec-method` CLI flag still takes highest priority.
+- **High-k per-position scaling** — increased `max_positions` from 16 to 64 for
+  setups with many speculative tokens (e.g., k=20, k=32).  The horizontal bar
+  layout already auto-wraps to multiple rows; this just removes the artificial cap.
+- **13 new tests** — covering `ServerSpecInfo`, `probe_server_spec_info` with
+  mocked `/v1/models` responses, dashboard rendering with `ServerSpecInfo` (draft
+  model priority, reset flash, Ctrl+R hint), and high-k position scaling (20 and
+  32 positions).  Total test count: **1,410**.
+
 ## [1.6.0] — 2026-05-07
 
 ### Added

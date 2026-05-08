@@ -28,7 +28,6 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -487,3 +486,116 @@ async def scrape_snapshot(
     except Exception as exc:
         logger.debug("Scrape failed: %s", exc)
         return None
+
+
+@dataclass
+class ServerSpecInfo:
+    """Information about speculative decoding gathered from server APIs.
+
+    Populated at startup by probing /v1/models and /version rather than
+    relying on keyword scanning of Prometheus text (which rarely works).
+    """
+
+    spec_method: str | None = None       # e.g. "draft_model", "mtp", "dflash"
+    draft_model_name: str | None = None  # e.g. "Qwen/Qwen3-0.6B"
+    target_model_name: str | None = None
+    num_speculative_tokens: int | None = None
+
+
+async def probe_server_spec_info(
+    base_url: str,
+    *,
+    api_key: str | None = None,
+    primary_model: str = "unknown",
+) -> ServerSpecInfo:
+    """Probe the inference server for speculative decoding configuration.
+
+    Strategy (in priority order):
+    1. GET /v1/models — if multiple model IDs are listed, the one
+       *not* matching ``primary_model`` is likely the draft model.
+    2. GET /version (vLLM-specific) — may contain speculative_config.
+
+    This is called once at startup, not on every poll.
+    """
+    info = ServerSpecInfo()
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    b = base_url.rstrip("/")
+    if not b.endswith("/v1"):
+        b = f"{b}/v1"
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+        # --- 1. Probe /v1/models ---
+        try:
+            resp = await client.get(f"{b}/models", headers=headers)
+            if resp.status_code == 200:
+                body = resp.json()
+                model_ids: list[str] = []
+                if isinstance(body, dict) and "data" in body:
+                    for entry in body["data"]:
+                        if isinstance(entry, dict) and "id" in entry:
+                            model_ids.append(entry["id"])
+
+                if len(model_ids) >= 2:
+                    # Heuristic: the model matching primary_model is the
+                    # target; the other(s) are draft candidates.
+                    primary_norm = primary_model.lower().replace("/", "").replace("-", "")
+                    drafts = []
+                    target = None
+                    for mid in model_ids:
+                        mid_norm = mid.lower().replace("/", "").replace("-", "")
+                        # Check if this model matches the primary (substring match)
+                        if primary_norm in mid_norm or mid_norm in primary_norm:
+                            target = mid
+                        else:
+                            drafts.append(mid)
+
+                    if not target:
+                        # Fallback: pick the first model as target, rest as drafts
+                        target = model_ids[0]
+                        drafts = model_ids[1:]
+
+                    info.target_model_name = target
+                    if drafts:
+                        info.draft_model_name = drafts[0]
+                        info.spec_method = info.spec_method or "draft_model"
+                        logger.info(
+                            "Detected draft model from /v1/models: %s (target: %s)",
+                            info.draft_model_name, info.target_model_name,
+                        )
+                elif len(model_ids) == 1:
+                    info.target_model_name = model_ids[0]
+        except Exception as exc:
+            logger.debug("/v1/models probe failed: %s", exc)
+
+        # --- 2. Probe /version (vLLM-specific) ---
+        version_url = base_url.rstrip("/")
+        if version_url.endswith("/v1"):
+            version_url = version_url[:-3]
+        try:
+            resp = await client.get(f"{version_url}/version", headers=headers)
+            if resp.status_code == 200:
+                body = resp.json()
+                if isinstance(body, dict):
+                    # Some vLLM builds expose speculative_config in /version
+                    spec_cfg = body.get("speculative_config")
+                    if isinstance(spec_cfg, dict):
+                        method = spec_cfg.get("method")
+                        if method:
+                            info.spec_method = method
+                        draft = spec_cfg.get("model")
+                        if draft and not info.draft_model_name:
+                            info.draft_model_name = draft
+                        nst = spec_cfg.get("num_speculative_tokens")
+                        if isinstance(nst, int):
+                            info.num_speculative_tokens = nst
+                        logger.info(
+                            "Detected spec config from /version: method=%s, draft=%s, k=%s",
+                            info.spec_method, info.draft_model_name, info.num_speculative_tokens,
+                        )
+        except Exception as exc:
+            logger.debug("/version probe failed: %s", exc)
+
+    return info

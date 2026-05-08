@@ -26,9 +26,11 @@ from rich.text import Text
 
 from tool_eval_bench.runner.spec_live import (
     MetricsSnapshot,
+    ServerSpecInfo,
     SpecLiveDelta,
     compute_delta,
     metrics_url_from_base,
+    probe_server_spec_info,
     scrape_snapshot,
 )
 
@@ -187,13 +189,14 @@ def _position_bars(rates: dict[int, float], max_positions: int = 8, bar_width: i
 
 def _position_bars_horizontal(
     rates: dict[int, float],
-    max_positions: int = 16,
+    max_positions: int = 64,
     inner_w: int = 80,
 ) -> Table:
     """Render per-position acceptance rates as horizontal inline bars.
 
     Automatically wraps to multiple rows when there are too many positions
     to fit in a single line (e.g., k=12 at 80 columns gets 2 rows of 6).
+    Supports up to 64 positions by default (enough for any current setup).
     """
     positions = sorted(rates.keys())[:max_positions]
     if not positions:
@@ -378,6 +381,8 @@ def _build_dashboard(
     poll_count: int,
     baseline_snap: MetricsSnapshot | None = None,
     term_width: int = 120,
+    server_spec_info: ServerSpecInfo | None = None,
+    reset_flash: bool = False,
 ) -> Panel:
     """Build the full dashboard layout.
 
@@ -426,15 +431,20 @@ def _build_dashboard(
     left_text.append(" ▸ ", style="dim cyan")
     left_text.append(model_name, style="bold cyan")
 
-    # Show draft model name if Prometheus labels reveal a model different from primary
-    if delta is not None and delta.model_names:
-        # The primary model is usually the longest name or matches model_name.
-        # Any additional model names are likely draft models.
+    # Show draft model name — prefer ServerSpecInfo (probed from /v1/models at
+    # startup) over Prometheus label heuristic (rarely contains draft model)
+    draft_name: str | None = None
+    if server_spec_info and server_spec_info.draft_model_name:
+        draft_name = server_spec_info.draft_model_name
+    elif delta is not None and delta.model_names:
+        # Fallback: look for a model_name label different from primary
         other_models = {m for m in delta.model_names if m != model_name}
         if other_models:
-            draft_name = sorted(other_models)[0]  # pick deterministically
-            left_text.append("  ← ", style="dim")
-            left_text.append(draft_name, style="dim italic cyan")
+            draft_name = sorted(other_models)[0]
+
+    if draft_name:
+        left_text.append("  ← ", style="dim")
+        left_text.append(draft_name, style="dim italic cyan")
 
     right_text = Text()
     right_text.append(f"⏱  {_format_uptime(uptime)}", style="dim")
@@ -461,7 +471,7 @@ def _build_dashboard(
             Group(header, waiting),
             border_style="bright_magenta",
             title="[bold bright_magenta]─── ◆ spec-live ◆ ───[/]",
-            subtitle="[dim italic]Ctrl+C to exit  ·  Refreshing every 1s[/]",
+            subtitle="[dim italic]Ctrl+R reset  ·  Ctrl+C exit  ·  Refreshing every 1s[/]",
         )
 
     # ── Use CUMULATIVE rates for gauges (always meaningful) ──
@@ -757,11 +767,18 @@ def _build_dashboard(
         parts.append(Text(""))
         parts.append(per_pos_panel)
 
+    # Reset flash banner
+    if reset_flash:
+        flash_text = Text()
+        flash_text.append("\n  ⟳ Session reset  ", style="bold bright_yellow")
+        flash_text.append("— counters & history cleared", style="dim yellow")
+        parts.append(flash_text)
+
     return Panel(
         Group(*parts),
         border_style="bright_magenta",
         title="[bold bright_magenta]─── ◆ spec-live ◆ ───[/]",
-        subtitle="[dim italic]Ctrl+C to exit  ·  Refreshing every 1s[/]",
+        subtitle="[dim italic]Ctrl+R reset  ·  Ctrl+C exit  ·  Refreshing every 1s[/]",
         padding=(0, 1),
     )
 
@@ -769,6 +786,53 @@ def _build_dashboard(
 # ---------------------------------------------------------------------------
 # Main async loop
 # ---------------------------------------------------------------------------
+
+async def _read_keypress(stop_event: asyncio.Event) -> str | None:
+    """Non-blocking stdin key reader for the async loop.
+
+    Returns a single character when a key is pressed, or None if
+    the stop event fires first.  Only works on Unix (uses termios
+    raw mode); returns None immediately on unsupported platforms.
+    """
+    import sys
+
+    try:
+        import termios
+        import tty
+    except ImportError:
+        return None  # Windows — Ctrl+R not supported
+
+    fd = sys.stdin.fileno()
+    try:
+        old_settings = termios.tcgetattr(fd)
+    except termios.error:
+        return None  # not a real tty (e.g. piped input)
+
+    try:
+        tty.setraw(fd)
+        loop = asyncio.get_event_loop()
+        # Wait for stdin to become readable or stop_event
+        future: asyncio.Future[str | None] = loop.create_future()
+
+        def _on_readable() -> None:
+            if not future.done():
+                ch = sys.stdin.read(1)
+                future.set_result(ch)
+
+        loop.add_reader(fd, _on_readable)
+        try:
+            done, _ = await asyncio.wait(
+                [asyncio.ensure_future(future), asyncio.ensure_future(stop_event.wait())],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if future.done():
+                return future.result()
+            return None
+        finally:
+            loop.remove_reader(fd)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
 
 async def run_spec_live(
     base_url: str,
@@ -782,7 +846,7 @@ async def run_spec_live(
     """Run the live speculative decoding monitor (blocking).
 
     Polls /metrics at ``poll_interval`` and renders a Rich Live dashboard.
-    Press Ctrl+C to exit gracefully.
+    Press Ctrl+C to exit gracefully, Ctrl+R to reset session counters.
 
     Uses the terminal alternate screen buffer so the dashboard occupies
     the entire terminal without disturbing previous output.
@@ -791,12 +855,22 @@ async def run_spec_live(
 
     url = metrics_url or metrics_url_from_base(base_url)
 
+    # ── Probe server for spec decode config (draft model, method, k) ──
+    server_spec_info: ServerSpecInfo | None = None
+    try:
+        server_spec_info = await probe_server_spec_info(
+            base_url, api_key=api_key, primary_model=model_name,
+        )
+    except Exception:
+        pass  # non-fatal — we'll fall back to Prometheus heuristics
+
     history: deque[SpecLiveDelta] = deque(maxlen=_HISTORY_LEN)
     prev_snap: MetricsSnapshot | None = None
     baseline_snap: MetricsSnapshot | None = None  # first snapshot — for session-relative counters
     start_time = time.time()
     poll_count = 0
     last_delta: SpecLiveDelta | None = None
+    reset_flash_remaining = 0  # show reset banner for N poll cycles
 
     # Sticky gauges — vLLM resets gauge metrics to 0 between its ~10s
     # internal update intervals.  We keep the last non-zero value so the
@@ -833,7 +907,8 @@ async def run_spec_live(
         ) as client:
             with Live(
                 _build_dashboard(None, history, start_time, model_name, url, 0, baseline_snap,
-                                 term_width=console.width),
+                                 term_width=console.width,
+                                 server_spec_info=server_spec_info),
                 console=console,
                 refresh_per_second=2,
                 transient=False,
@@ -908,13 +983,20 @@ async def run_spec_live(
                             history.append(delta)
                             last_delta = delta
 
-                            # Override spec method if user specified --spec-method
+                            # Override spec method from --spec-method CLI flag
                             if spec_method is not None:
                                 delta.spec_method = spec_method
+                            # Override spec method from ServerSpecInfo (API probe)
+                            elif server_spec_info and server_spec_info.spec_method:
+                                delta.spec_method = server_spec_info.spec_method
                         prev_snap = snap
                     elif snap is not None and prev_snap is None:
                         # First scrape, no spec decode counters yet — store for next
                         prev_snap = snap
+
+                    # Decrement reset flash counter
+                    if reset_flash_remaining > 0:
+                        reset_flash_remaining -= 1
 
                     live.update(
                         _build_dashboard(
@@ -922,16 +1004,84 @@ async def run_spec_live(
                             model_name, url, poll_count,
                             baseline_snap,
                             term_width=console.width,
+                            server_spec_info=server_spec_info,
+                            reset_flash=reset_flash_remaining > 0,
                         )
                     )
 
+                    # ── Wait for poll interval OR Ctrl+R keypress ──
+                    reset_event = asyncio.Event()
+
+                    async def _check_stdin() -> None:
+                        """Check stdin for Ctrl+R (\x12) keypresses."""
+                        try:
+                            import termios  # noqa: F811
+                            import tty  # noqa: F811
+                        except ImportError:
+                            return
+                        import sys as _sys  # avoid shadowing outer
+                        fd = _sys.stdin.fileno()
+                        try:
+                            old = termios.tcgetattr(fd)
+                        except termios.error:
+                            return
+                        try:
+                            tty.setcbreak(fd)  # cbreak: signals still work
+                            _loop = asyncio.get_event_loop()
+                            fut: asyncio.Future[None] = _loop.create_future()
+
+                            def _readable() -> None:
+                                if not fut.done():
+                                    ch = _sys.stdin.read(1)
+                                    if ch == "\x12":  # Ctrl+R
+                                        reset_event.set()
+                                    fut.set_result(None)
+
+                            _loop.add_reader(fd, _readable)
+                            try:
+                                await asyncio.wait_for(fut, timeout=poll_interval)
+                            except asyncio.TimeoutError:
+                                pass
+                            finally:
+                                try:
+                                    _loop.remove_reader(fd)
+                                except Exception:
+                                    pass
+                        finally:
+                            try:
+                                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                            except Exception:
+                                pass
+
+                    # Run stdin check with poll timeout
                     try:
-                        await asyncio.wait_for(
-                            stop_event.wait(), timeout=poll_interval,
-                        )
-                        break  # stop_event was set
-                    except asyncio.TimeoutError:
-                        pass  # normal: poll again
+                        await _check_stdin()
+                    except Exception:
+                        # Fallback: plain wait (no stdin support)
+                        try:
+                            await asyncio.wait_for(
+                                stop_event.wait(), timeout=poll_interval,
+                            )
+                            break
+                        except asyncio.TimeoutError:
+                            pass
+
+                    if stop_event.is_set():
+                        break
+
+                    # ── Handle Ctrl+R session reset ──
+                    if reset_event.is_set():
+                        history.clear()
+                        prev_snap = None
+                        baseline_snap = None
+                        last_delta = None
+                        start_time = time.time()
+                        poll_count = 0
+                        _sticky_gen_tps = 0.0
+                        _sticky_prompt_tps = 0.0
+                        _sticky_gpu_cache_pct = 0.0
+                        _sticky_prefix_cache_pct = 0.0
+                        reset_flash_remaining = 3  # show banner for 3 poll cycles
 
     finally:
         # ── Leave alternate screen buffer ──
