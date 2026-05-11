@@ -46,6 +46,13 @@ All notable changes to `tool-eval-bench` are documented here.
   `build_pressure_messages()` / `calibrate_pressure_messages()` accept a `seed`
   parameter for fully deterministic, reproducible sweeps when `--seed` is set.
 
+- **Context pressure single-run timeout** — when using `--context-pressure`
+  with large fills (e.g. 182K tokens at 75% of a 260K context), the default
+  60-second timeout was too short for prefill, causing scenarios to fail with
+  a timeout.  The sweep path already auto-scaled timeouts but the single-run
+  path did not.  Fix: apply the same auto-scaling formula
+  (`120s base + 60s per 50K fill tokens`) to the single-run path.
+
 ## [1.6.0] — 2026-05-07
 
 ### Added
