@@ -448,7 +448,7 @@ def _tc14_eval(state: ScenarioState) -> ScenarioEvaluation:
     )
     offered_alt = bool(
         re.search(
-            r"web search|search(?:ing)?(?: for)?(?: the)? information online|search online|try again|fallback|check .*?(?:website|platform|source)",
+            r"web search|search(?:ing)?(?: for)?(?: the)? information online|search online|try again|fallback|check(?:ing)? .*?(?:website|platform|source)",
             transcript,
             re.IGNORECASE,
         )
