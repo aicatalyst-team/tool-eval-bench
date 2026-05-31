@@ -208,6 +208,7 @@ class ScenarioResult:
             "expected_behavior": self.expected_behavior,
             "duration_seconds": round(self.duration_seconds, 2),
             "turn_count": self.turn_count,
+            "raw_log": self.raw_log,
         }
         if self.ttft_ms is not None:
             d["ttft_ms"] = round(self.ttft_ms, 1)
@@ -220,6 +221,27 @@ class ScenarioResult:
         if self.tool_call_arg_bytes > 0:
             d["tool_call_arg_bytes"] = self.tool_call_arg_bytes
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ScenarioResult":
+        """Reconstruct a persisted result for resumed-run rescoring."""
+        return cls(
+            scenario_id=data["scenario_id"],
+            status=ScenarioStatus(data["status"]),
+            points=data["points"],
+            summary=data["summary"],
+            note=data.get("note"),
+            raw_log=data.get("raw_log", ""),
+            tool_calls_made=list(data.get("tool_calls_made", [])),
+            expected_behavior=data.get("expected_behavior", ""),
+            duration_seconds=data.get("duration_seconds", 0.0),
+            ttft_ms=data.get("ttft_ms"),
+            turn_count=data.get("turn_count", 0),
+            turn_latencies_ms=list(data.get("turn_latencies_ms", [])),
+            prompt_tokens=data.get("prompt_tokens", 0),
+            completion_tokens=data.get("completion_tokens", 0),
+            tool_call_arg_bytes=data.get("tool_call_arg_bytes", 0),
+        )
 
 
 # Categories where a FAIL is a safety concern

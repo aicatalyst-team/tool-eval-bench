@@ -93,6 +93,25 @@ def _redact_url(url: str) -> str:
     from tool_eval_bench.utils.urls import redact_url
     return redact_url(url)
 
+
+def _metadata_for_storage(run_context: Any | None) -> dict[str, Any]:
+    """Return JSON-safe persisted metadata for a plugin benchmark run."""
+    return run_context.to_dict() if run_context is not None else {}
+
+
+def _with_config_fingerprint(config: dict[str, Any]) -> dict[str, Any]:
+    """Attach a deterministic comparison fingerprint to plugin config."""
+    from tool_eval_bench.utils.ids import build_config_fingerprint
+    return {**config, "config_fingerprint": build_config_fingerprint(config)}
+
+
+def _persist_plugin_run(run_data: dict[str, Any]) -> None:
+    """Persist a plugin result, surfacing mandatory-storage failures."""
+    from tool_eval_bench.storage.db import RunRepository
+    with RunRepository() as repo:
+        repo.upsert_scenario_run(run_data)
+
+
 # ---------------------------------------------------------------------------
 # Server auto-discovery
 # ---------------------------------------------------------------------------
@@ -1304,10 +1323,10 @@ def _run_gsm8k_benchmark(
         from tool_eval_bench.storage.reports import MarkdownReporter
         from tool_eval_bench.utils.ids import build_run_id
 
-        run_config = {
+        run_config = _with_config_fingerprint({
             "model": model, "base_url": base_url,
             "mode": "gsm8k", "n_shots": n_shots, "limit": limit,
-        }
+        })
         run_id = build_run_id(run_config)
         reporter = MarkdownReporter(root=output_dir)
         report_lines = plugin.render_report_section(result)
@@ -1315,25 +1334,19 @@ def _run_gsm8k_benchmark(
                            report_lines, run_context=run_context)
 
         # Persist to SQLite (project rule: every run → SQLite)
-        from tool_eval_bench.storage.db import RunRepository
-        try:
-            repo = RunRepository()
-            repo.upsert_scenario_run({
-                "run_id": run_id,
-                "run_type": "gsm8k",
-                "status": "completed",
-                "config": run_config,
-                "scores": {
-                    "final_score": round(result.score),
-                    "accuracy": result.score,
-                    "rating": result.rating,
-                    **result.details,
-                },
-                "metadata": run_context or {},
-            })
-            repo.close()
-        except Exception:
-            pass  # Don't fail the benchmark if persistence fails
+        _persist_plugin_run({
+            "run_id": run_id,
+            "run_type": "gsm8k",
+            "status": "completed",
+            "config": run_config,
+            "scores": {
+                "final_score": round(result.score),
+                "accuracy": result.score,
+                "rating": result.rating,
+                **result.details,
+            },
+            "metadata": _metadata_for_storage(run_context),
+        })
 
         console.print("\n  [dim]Report saved to runs/[/]\n")
 
@@ -1637,10 +1650,10 @@ def _run_mmlu_benchmark(
     from tool_eval_bench.utils.ids import build_run_id
     from datetime import datetime, timezone
 
-    run_config = {
+    run_config = _with_config_fingerprint({
         "model": model, "base_url": base_url,
         "mode": "mmlu", "n_shots": n_shots, "limit": limit,
-    }
+    })
     run_id = build_run_id(run_config)
     reporter = MarkdownReporter(root=output_dir)
     report_lines = plugin.render_report_section(result)
@@ -1663,25 +1676,19 @@ def _run_mmlu_benchmark(
     path.write_text("\n".join(md), encoding="utf-8")
 
     # Persist to SQLite (project rule: every run → SQLite)
-    from tool_eval_bench.storage.db import RunRepository
-    try:
-        repo = RunRepository()
-        repo.upsert_scenario_run({
-            "run_id": run_id,
-            "run_type": "mmlu",
-            "status": "completed",
-            "config": run_config,
-            "scores": {
-                "final_score": round(result.score),
-                "accuracy": result.score,
-                "rating": result.rating,
-                **result.details,
-            },
-            "metadata": run_context or {},
-        })
-        repo.close()
-    except Exception:
-        pass  # Don't fail the benchmark if persistence fails
+    _persist_plugin_run({
+        "run_id": run_id,
+        "run_type": "mmlu",
+        "status": "completed",
+        "config": run_config,
+        "scores": {
+            "final_score": round(result.score),
+            "accuracy": result.score,
+            "rating": result.rating,
+            **result.details,
+        },
+        "metadata": _metadata_for_storage(run_context),
+    })
 
     console.print("\n  [dim]Report saved to runs/[/]\n")
 
@@ -1924,10 +1931,10 @@ def _run_ifeval_benchmark(
     from tool_eval_bench.utils.ids import build_run_id
     from datetime import datetime, timezone
 
-    run_config = {
+    run_config = _with_config_fingerprint({
         "model": model, "base_url": base_url,
         "mode": "ifeval", "limit": limit,
-    }
+    })
     run_id = build_run_id(run_config)
     reporter = MarkdownReporter(root=output_dir)
     report_lines = plugin.render_report_section(result)
@@ -1951,25 +1958,19 @@ def _run_ifeval_benchmark(
     path.write_text("\n".join(md), encoding="utf-8")
 
     # Persist to SQLite (project rule: every run → SQLite)
-    from tool_eval_bench.storage.db import RunRepository
-    try:
-        repo = RunRepository()
-        repo.upsert_scenario_run({
-            "run_id": run_id,
-            "run_type": "ifeval",
-            "status": "completed",
-            "config": run_config,
-            "scores": {
-                "final_score": round(result.score),
-                "accuracy": result.score,
-                "rating": result.rating,
-                **result.details,
-            },
-            "metadata": run_context or {},
-        })
-        repo.close()
-    except Exception:
-        pass  # Don't fail the benchmark if persistence fails
+    _persist_plugin_run({
+        "run_id": run_id,
+        "run_type": "ifeval",
+        "status": "completed",
+        "config": run_config,
+        "scores": {
+            "final_score": round(result.score),
+            "accuracy": result.score,
+            "rating": result.rating,
+            **result.details,
+        },
+        "metadata": _metadata_for_storage(run_context),
+    })
 
     console.print("\n  [dim]Report saved to runs/[/]\n")
 
@@ -3763,4 +3764,3 @@ def _run_plain(
 
 if __name__ == "__main__":
     main()
-

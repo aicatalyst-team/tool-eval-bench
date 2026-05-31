@@ -149,7 +149,7 @@ Shared infrastructure:
 
 | Module | Purpose |
 |---|---|
-| `ids.py` | Run ID generation (timestamp + hash) |
+| `ids.py` | Unique run IDs and deterministic configuration fingerprints |
 | `metadata.py` | System/backend metadata collection (engine probing) |
 | `urls.py` | URL construction, redaction, header helpers |
 
@@ -245,4 +245,4 @@ All backends use `OpenAICompatibleAdapter`. To support a new backend:
 | API | `test_api.py`, `test_plugin_interface.py` | Programmatic API, schema drift |
 | Adapter | `test_adapter.py` | SSE streaming, normalize, parse, error handling (httpx mocks) |
 
-**Total: 1,697 tests, 64% line coverage, 1.6s runtime.**
+**Total: 1,706 tests, 64% line coverage, 1.9s runtime.**

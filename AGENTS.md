@@ -31,7 +31,8 @@ The sole interface is the `tool-eval-bench` CLI. There is no web server or TUI.
 
 - Every completed run MUST be persisted to SQLite.
 - Every completed run MUST also produce a Markdown artifact under `runs/YYYY/MM/`.
-- Run IDs use UTC timestamp + short deterministic hash.
+- Run IDs use a UTC timestamp + short nonce-backed hash for unique execution identity.
+- Comparable run configurations use a separate deterministic `config_fingerprint`.
 - Markdown reports MUST include full traces for every scenario.
 
 ## Compatibility targets

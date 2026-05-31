@@ -117,6 +117,18 @@ class TestLeaderboardExtraction:
         rows = _extract_leaderboard_rows([])
         assert rows == []
 
+    def test_separates_runs_with_different_config_fingerprints(self) -> None:
+        from tool_eval_bench.cli.leaderboard import _extract_leaderboard_rows
+
+        first = self._make_run(model="same", final_score=90)
+        first["config"]["config_fingerprint"] = "first"
+        second = self._make_run(model="same", final_score=70)
+        second["config"]["config_fingerprint"] = "second"
+
+        rows = _extract_leaderboard_rows([first, second])
+
+        assert len(rows) == 2
+
 
 # ===========================================================================
 # Leaderboard: color helpers

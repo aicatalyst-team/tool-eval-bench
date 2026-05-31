@@ -9,6 +9,7 @@ Captures full traces for auditability.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import random
@@ -53,6 +54,11 @@ _INJECTED_ERRORS = [
     {"error": "Internal server error. The service is temporarily unavailable.", "status": 500},
     {"error": "Request timed out. The service did not respond in time.", "status": 503},
 ]
+
+
+def _scenario_seed_offset(scenario_id: str) -> int:
+    """Return a stable per-scenario offset for seeded error injection."""
+    return int.from_bytes(hashlib.sha256(scenario_id.encode()).digest()[:4], "big")
 
 
 def _maybe_inject_error(
@@ -247,11 +253,11 @@ async def run_scenario(
     trace_lines: list[str] = ["assistant=starting"]
 
     # Per-scenario seeded RNG for deterministic error injection.
-    # Uses hash(scenario.id) as offset so each scenario gets a unique
+    # Uses a stable digest offset so each scenario gets a unique
     # but reproducible injection pattern regardless of execution order.
     error_rng: random.Random | None = None
     if seed is not None and error_rate > 0:
-        error_rng = random.Random(seed + hash(scenario.id) % (2**31))
+        error_rng = random.Random(seed + _scenario_seed_offset(scenario.id))
 
     ttft_ms: float | None = None
     turn_latencies: list[float] = []

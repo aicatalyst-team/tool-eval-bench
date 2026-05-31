@@ -41,3 +41,21 @@ def test_list_runs(tmp_path: Path) -> None:
 
     runs_filtered = repo.list(limit=1)
     assert len(runs_filtered) == 1
+
+
+def test_upsert_replaces_config_for_resumed_run(tmp_path: Path) -> None:
+    repo = RunRepository(db_path=str(tmp_path / "bench.sqlite"))
+    repo.upsert_scenario_run({
+        "run_id": "resumed",
+        "config": {"model": "test-model", "scenario_ids": ["TC-01"]},
+        "scores": {"final_score": 50},
+    })
+    repo.upsert_scenario_run({
+        "run_id": "resumed",
+        "config": {"model": "test-model", "scenario_ids": ["TC-01", "TC-02"]},
+        "scores": {"final_score": 100},
+    })
+
+    out = repo.get("resumed")
+    assert out is not None
+    assert out["config"]["scenario_ids"] == ["TC-01", "TC-02"]

@@ -17,12 +17,13 @@ from tool_eval_bench.domain.scenarios import (
     OnScenarioResult,
     OnScenarioStart,
     ScenarioDefinition,
+    ScenarioResult,
 )
 from tool_eval_bench.evals.scenarios import ALL_SCENARIOS
-from tool_eval_bench.runner.orchestrator import run_all_scenarios
+from tool_eval_bench.runner.orchestrator import run_all_scenarios, score_results
 from tool_eval_bench.storage.db import RunRepository
 from tool_eval_bench.storage.reports import MarkdownReporter
-from tool_eval_bench.utils.ids import build_run_id
+from tool_eval_bench.utils.ids import build_config_fingerprint, build_run_id
 from tool_eval_bench.utils.urls import redact_url as _redact_url
 
 logger = logging.getLogger(__name__)
@@ -114,26 +115,33 @@ class BenchmarkService:
         else:
             resolved = ALL_SCENARIOS
 
-        # Build run ID (reuse original for resumed runs)
-        if resume_run_id:
-            run_id = resume_run_id
-        else:
-            run_config_hash = {
-                "model": model,
-                "backend": backend,
-                "base_url": base_url,
-                "scenarios": [s.id for s in resolved],
-                "temperature": temperature,
-                "seed": seed,
-                "error_rate": error_rate,
-            }
-            run_id = build_run_id(run_config_hash)
-
         # Build metadata from RunContext (preferred) or legacy probe
         if run_context:
             metadata = run_context.to_dict()
         else:
             metadata = await _collect_metadata_safe(model, backend, base_url, api_key)
+
+        run_config = _build_run_config(
+            model=model,
+            backend=backend,
+            base_url=base_url,
+            scenarios=resolved,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+            max_turns=max_turns,
+            seed=seed,
+            reference_date=reference_date,
+            concurrency=concurrency,
+            error_rate=error_rate,
+            alpha=alpha,
+            extra_params=extra_params,
+            context_pressure_config=context_pressure_config,
+            weight_by_difficulty=weight_by_difficulty,
+            metadata=metadata,
+        )
+
+        # Build run ID (reuse original for resumed runs)
+        run_id = resume_run_id or build_run_id(run_config)
 
         # Run all scenarios (close adapter connection pool when done)
         try:
@@ -164,56 +172,63 @@ class BenchmarkService:
 
         # Merge prior results for resumed runs
         if resume_prior_results:
-            summary_dict = summary.to_dict()
-            existing_ids = {r["scenario_id"] for r in summary_dict.get("scenario_results", [])}
-            merged_results = list(summary_dict.get("scenario_results", []))
-            prior_count = 0
+            merged_results = list(summary.scenario_results)
+            existing_ids = {r.scenario_id for r in merged_results}
             for pr in resume_prior_results:
                 if pr.get("scenario_id") not in existing_ids:
-                    merged_results.append(pr)
-                    prior_count += 1
-            # Re-compute aggregate scores from merged results
-            merged_points = sum(r.get("points", 0) for r in merged_results)
-            merged_max = len(merged_results) * 2
-            merged_score = round(merged_points / merged_max * 100) if merged_max > 0 else 0
-            summary_dict["scenario_results"] = merged_results
-            summary_dict["total_points"] = merged_points
-            summary_dict["max_points"] = merged_max
-            summary_dict["final_score"] = merged_score
-            # Re-derive rating
-            from tool_eval_bench.domain.scenarios import rating_for_score
-            summary_dict["rating"] = rating_for_score(merged_score)
+                    merged_results.append(ScenarioResult.from_dict(pr))
+            scenario_by_id = {s.id: s for s in [*ALL_SCENARIOS, *resolved]}
+            missing_ids = {r.scenario_id for r in merged_results} - scenario_by_id.keys()
+            if missing_ids:
+                raise ValueError(
+                    "Cannot resume unknown scenarios: " + ", ".join(sorted(missing_ids))
+                )
+            result_by_id = {r.scenario_id: r for r in merged_results}
+            ordered_ids = list(dict.fromkeys(
+                s.id for s in [*ALL_SCENARIOS, *resolved] if s.id in result_by_id
+            ))
+            merged_results = [result_by_id[scenario_id] for scenario_id in ordered_ids]
+            merged_scenarios = [scenario_by_id[scenario_id] for scenario_id in ordered_ids]
+            summary = score_results(
+                merged_results,
+                merged_scenarios,
+                alpha=alpha,
+                weight_by_difficulty=weight_by_difficulty,
+            )
+            run_config = _build_run_config(
+                model=model,
+                backend=backend,
+                base_url=base_url,
+                scenarios=merged_scenarios,
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
+                max_turns=max_turns,
+                seed=seed,
+                reference_date=reference_date,
+                concurrency=concurrency,
+                error_rate=error_rate,
+                alpha=alpha,
+                extra_params=extra_params,
+                context_pressure_config=context_pressure_config,
+                weight_by_difficulty=weight_by_difficulty,
+                metadata=metadata,
+            )
             logger.info(
                 "Resume merge: %d prior + %d new = %d total scenarios (score: %d)",
-                prior_count, len(existing_ids), len(merged_results), merged_score,
+                len(merged_results) - len(existing_ids),
+                len(existing_ids),
+                len(merged_results),
+                summary.final_score,
             )
-            scores_blob = summary_dict
-        else:
-            scores_blob = summary.to_dict()
 
         # Persist
         run_data = {
             "run_id": run_id,
             "status": "completed",
-            "config": {
-                "model": model,
-                "backend": backend,
-                "base_url": _redact_url(base_url),
-                "temperature": temperature,
-                "timeout_seconds": timeout_seconds,
-                "max_turns": max_turns,
-                "seed": seed,
-                "reference_date": reference_date,
-                "scenario_count": len(resolved),
-                "scenario_ids": [s.id for s in resolved],
-            },
-            "scores": scores_blob,
+            "config": run_config,
+            "scores": summary.to_dict(),
             "metadata": metadata,
         }
-
-        # Include context pressure info if active
-        if context_pressure_config:
-            run_data["config"]["context_pressure"] = context_pressure_config
 
         if self.repo is not None:
             self.repo.upsert_scenario_run(run_data)
@@ -227,6 +242,66 @@ class BenchmarkService:
             run_data["report_path"] = str(report_path)
 
         return run_data
+
+
+def _build_run_config(
+    *,
+    model: str,
+    backend: str,
+    base_url: str,
+    scenarios: list[ScenarioDefinition],
+    temperature: float,
+    timeout_seconds: float,
+    max_turns: int,
+    seed: int | None,
+    reference_date: str | None,
+    concurrency: int,
+    error_rate: float,
+    alpha: float,
+    extra_params: dict[str, Any] | None,
+    context_pressure_config: dict[str, Any] | None,
+    weight_by_difficulty: bool,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Build persisted config and its deterministic comparison fingerprint."""
+    config: dict[str, Any] = {
+        "model": model,
+        "backend": backend,
+        "base_url": _redact_url(base_url),
+        "temperature": temperature,
+        "timeout_seconds": timeout_seconds,
+        "max_turns": max_turns,
+        "seed": seed,
+        "reference_date": reference_date,
+        "scenario_count": len(scenarios),
+        "scenario_ids": [s.id for s in scenarios],
+        "concurrency": concurrency,
+        "error_rate": error_rate,
+        "alpha": alpha,
+        "extra_params": extra_params,
+        "weight_by_difficulty": weight_by_difficulty,
+    }
+    if context_pressure_config:
+        config["context_pressure"] = context_pressure_config
+    comparison_context = {
+        key: metadata.get(key)
+        for key in (
+            "server_model_id",
+            "server_model_root",
+            "engine_name",
+            "engine_version",
+            "quantization",
+            "gpu_count",
+            "spec_decoding",
+        )
+        if metadata.get(key) is not None
+    }
+    fingerprint_config = {**config, "scenario_ids": sorted(config["scenario_ids"])}
+    config["config_fingerprint"] = build_config_fingerprint({
+        "config": fingerprint_config,
+        "deployment": comparison_context,
+    })
+    return config
 
 
 async def _collect_metadata_safe(

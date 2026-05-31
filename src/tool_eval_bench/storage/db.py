@@ -93,9 +93,13 @@ class RunRepository:
                 )
                 VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(run_id) DO UPDATE SET
+                  created_at=excluded.created_at,
                   status=excluded.status,
+                  model=excluded.model,
+                  config_json=excluded.config_json,
                   scores_json=excluded.scores_json,
-                  metadata_json=excluded.metadata_json
+                  metadata_json=excluded.metadata_json,
+                  run_type=excluded.run_type
                 """,
                 (
                     run_data["run_id"],
@@ -172,4 +176,3 @@ class RunRepository:
         if not run or not run.get("scores"):
             return None
         return run["scores"].get("scenario_results", [])
-

@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from tool_eval_bench.utils.ids import build_config_fingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +115,11 @@ def _extract_leaderboard_rows(
 ) -> list[dict[str, Any]]:
     """Extract normalized rows from stored run data.
 
-    Groups by (model, scenario_count, backend) so that runs with different
-    configurations are ranked separately. Takes the best (highest-scoring)
-    run within each group.
+    Groups by model and deterministic configuration fingerprint so that only
+    comparable executions are ranked together. Takes the best run per group.
     """
     # Group runs by comparable configuration
-    by_config: dict[tuple[str, int, str], list[dict]] = {}
+    by_config: dict[tuple[str, str], list[dict]] = {}
     for run in runs:
         model = run.get("model", "unknown")
         config = run.get("config") or {}
@@ -134,11 +134,15 @@ def _extract_leaderboard_rows(
             scores.get("scenario_results", [])
         ))
         backend = config.get("backend", "?")
-        key = (model, scenario_count, backend)
+        fingerprint = config.get("config_fingerprint") or build_config_fingerprint({
+            "config": config,
+            "metadata": run.get("metadata") or {},
+        })
+        key = (model, fingerprint)
         by_config.setdefault(key, []).append(run)
 
     rows: list[dict[str, Any]] = []
-    for (model, scenario_count, backend), group_runs in by_config.items():
+    for (model, fingerprint), group_runs in by_config.items():
         # Take the best run (highest final score)
         best = max(
             group_runs,
@@ -146,6 +150,10 @@ def _extract_leaderboard_rows(
         )
         scores = best.get("scores") or {}
         config = best.get("config") or {}
+        scenario_count = config.get("scenario_count", len(
+            scores.get("scenario_results", [])
+        ))
+        backend = config.get("backend", "?")
 
         # Extract per-category percentages
         cat_scores: dict[str, float] = {}
@@ -175,6 +183,7 @@ def _extract_leaderboard_rows(
             "cat_scores": cat_scores,
             "scenario_count": scenario_count,
             "backend": backend,
+            "config_fingerprint": fingerprint,
             "total_tokens": scores.get("total_tokens", 0),
             "token_efficiency": scores.get("token_efficiency"),
             "median_turn_ms": scores.get("median_turn_ms"),

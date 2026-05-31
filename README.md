@@ -633,7 +633,10 @@ src/tool_eval_bench/
 
 ## Run ID and Artifacts
 
-Each benchmark run gets a unique ID: `YYYY-MM-DDTHH-MM-SSZ_<short_hash>`
+Each benchmark execution gets a unique ID:
+`YYYY-MM-DDTHH-MM-SS.ffffffZ_<short_hash>`. Stored tool-evaluation configs also
+include a deterministic `config_fingerprint` so leaderboard entries only group
+comparable runs.
 
 Artifacts:
 - SQLite record (`data/benchmarks.sqlite`)
@@ -686,7 +689,7 @@ tool-eval-bench --compare <run_id_a> <run_id_b>
 
 ```bash
 ruff check .       # lint
-pytest             # 1,697 tests — scenario evaluators, plugins, storage, CLI, adapter
+pytest             # 1,706 tests — scenario evaluators, plugins, storage, CLI, adapter
                    # includes --cov-fail-under=55 coverage gate (current: 63%)
 ```
 

@@ -6,6 +6,13 @@ import json
 import os
 
 
+def build_config_fingerprint(payload: dict) -> str:
+    """Return a deterministic short digest for comparison-relevant config."""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:12]
+
+
 def build_run_id(payload: dict) -> str:
     """Generate a unique run ID from a timestamp + content hash.
 
@@ -19,7 +26,5 @@ def build_run_id(payload: dict) -> str:
     # payloads within the same microsecond (e.g. parallel launchers).
     nonce = os.urandom(4).hex()
     payload_with_nonce = {**payload, "_nonce": nonce}
-    digest = hashlib.sha256(
-        json.dumps(payload_with_nonce, sort_keys=True).encode()
-    ).hexdigest()[:8]
+    digest = build_config_fingerprint(payload_with_nonce)[:8]
     return f"{ts}_{digest}"
