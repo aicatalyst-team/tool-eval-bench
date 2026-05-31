@@ -125,7 +125,7 @@ async def run_benchmark(
         persist: When *True* (default), persist results to SQLite + Markdown.
             Set to *False* when the caller handles its own persistence
             (e.g. sparkrun).
-        output_dir: Directory for report/DB files (default: ``./runs/``).
+        output_dir: Directory for Markdown report files (default: ``./runs/``).\n            The SQLite database is always at ``./data/benchmarks.sqlite``.
 
     Returns:
         A versioned JSON-serializable dict containing ``run_id``, ``config``,

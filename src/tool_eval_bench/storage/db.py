@@ -63,19 +63,35 @@ class RunRepository:
                   model TEXT NOT NULL,
                   config_json TEXT NOT NULL,
                   scores_json TEXT,
-                  metadata_json TEXT
+                  metadata_json TEXT,
+                  run_type TEXT NOT NULL DEFAULT 'tool_eval'
                 )
                 """
             )
+            # Migration: add run_type column if upgrading from an older schema
+            try:
+                conn.execute(
+                    "ALTER TABLE scenario_runs ADD COLUMN run_type TEXT NOT NULL DEFAULT 'tool_eval'"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     def upsert_scenario_run(self, run_data: dict[str, Any]) -> None:
-        """Persist a scenario-based benchmark run."""
+        """Persist a scenario-based benchmark run.
+
+        Uses INSERT OR REPLACE so that resumed runs can update their
+        original row.  New runs should generally produce unique IDs
+        (microsecond timestamp + random nonce) so collisions don't occur.
+        """
         with self._conn as conn:
             now = datetime.now(timezone.utc).isoformat()
             conn.execute(
                 """
-                INSERT INTO scenario_runs(run_id, created_at, status, model, config_json, scores_json, metadata_json)
-                VALUES(?,?,?,?,?,?,?)
+                INSERT INTO scenario_runs(
+                    run_id, created_at, status, model, config_json,
+                    scores_json, metadata_json, run_type
+                )
+                VALUES(?,?,?,?,?,?,?,?)
                 ON CONFLICT(run_id) DO UPDATE SET
                   status=excluded.status,
                   scores_json=excluded.scores_json,
@@ -89,6 +105,7 @@ class RunRepository:
                     json.dumps(run_data.get("config", {})),
                     json.dumps(run_data.get("scores", {})),
                     json.dumps(run_data.get("metadata", {})),
+                    run_data.get("run_type", "tool_eval"),
                 ),
             )
 
@@ -96,7 +113,8 @@ class RunRepository:
         """Retrieve a single run by ID."""
         with self._conn as conn:
             row = conn.execute(
-                "SELECT run_id, created_at, status, model, config_json, scores_json, metadata_json "
+                "SELECT run_id, created_at, status, model, config_json, "
+                "scores_json, metadata_json, run_type "
                 "FROM scenario_runs WHERE run_id=?",
                 (run_id,),
             ).fetchone()
@@ -110,12 +128,14 @@ class RunRepository:
             "config": json.loads(row[4]),
             "scores": json.loads(row[5]) if row[5] else None,
             "metadata": json.loads(row[6]) if row[6] else {},
+            "run_type": row[7] if len(row) > 7 else "tool_eval",
         }
 
     def list(self, limit: int = 20, model: str | None = None) -> list[dict]:
         """List recent runs, optionally filtered by model."""
         query = (
-            "SELECT run_id, created_at, status, model, config_json, scores_json, metadata_json "
+            "SELECT run_id, created_at, status, model, config_json, "
+            "scores_json, metadata_json, run_type "
             "FROM scenario_runs"
         )
         params: list[str | int] = []
@@ -136,6 +156,7 @@ class RunRepository:
                 "config": json.loads(r[4]),
                 "scores": json.loads(r[5]) if r[5] else None,
                 "metadata": json.loads(r[6]) if r[6] else {},
+                "run_type": r[7] if len(r) > 7 else "tool_eval",
             }
             for r in rows
         ]

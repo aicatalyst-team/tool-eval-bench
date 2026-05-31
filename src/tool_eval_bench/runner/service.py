@@ -79,8 +79,16 @@ class BenchmarkService:
         context_pressure_config: dict[str, Any] | None = None,
         run_context: RunContext | None = None,
         weight_by_difficulty: bool = False,
+        resume_run_id: str | None = None,
+        resume_prior_results: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Run the tool-call benchmark against a model and persist results."""
+        """Run the tool-call benchmark against a model and persist results.
+
+        When ``resume_run_id`` is set, the run reuses the original run ID.
+        When ``resume_prior_results`` is provided (a list of scenario result
+        dicts from a previous run), those results are merged into the final
+        summary so the stored run contains the complete result set.
+        """
         adapter = self._adapter_for(backend)
 
         # Compute reference day name from date if provided
@@ -106,14 +114,20 @@ class BenchmarkService:
         else:
             resolved = ALL_SCENARIOS
 
-        # Build run ID
-        run_config = {
-            "model": model,
-            "backend": backend,
-            "base_url": base_url,
-            "scenarios": [s.id for s in resolved],
-        }
-        run_id = build_run_id(run_config)
+        # Build run ID (reuse original for resumed runs)
+        if resume_run_id:
+            run_id = resume_run_id
+        else:
+            run_config_hash = {
+                "model": model,
+                "backend": backend,
+                "base_url": base_url,
+                "scenarios": [s.id for s in resolved],
+                "temperature": temperature,
+                "seed": seed,
+                "error_rate": error_rate,
+            }
+            run_id = build_run_id(run_config_hash)
 
         # Build metadata from RunContext (preferred) or legacy probe
         if run_context:
@@ -148,6 +162,35 @@ class BenchmarkService:
             if hasattr(adapter, "aclose"):
                 await adapter.aclose()
 
+        # Merge prior results for resumed runs
+        if resume_prior_results:
+            summary_dict = summary.to_dict()
+            existing_ids = {r["scenario_id"] for r in summary_dict.get("scenario_results", [])}
+            merged_results = list(summary_dict.get("scenario_results", []))
+            prior_count = 0
+            for pr in resume_prior_results:
+                if pr.get("scenario_id") not in existing_ids:
+                    merged_results.append(pr)
+                    prior_count += 1
+            # Re-compute aggregate scores from merged results
+            merged_points = sum(r.get("points", 0) for r in merged_results)
+            merged_max = len(merged_results) * 2
+            merged_score = round(merged_points / merged_max * 100) if merged_max > 0 else 0
+            summary_dict["scenario_results"] = merged_results
+            summary_dict["total_points"] = merged_points
+            summary_dict["max_points"] = merged_max
+            summary_dict["final_score"] = merged_score
+            # Re-derive rating
+            from tool_eval_bench.domain.scenarios import rating_for_score
+            summary_dict["rating"] = rating_for_score(merged_score)
+            logger.info(
+                "Resume merge: %d prior + %d new = %d total scenarios (score: %d)",
+                prior_count, len(existing_ids), len(merged_results), merged_score,
+            )
+            scores_blob = summary_dict
+        else:
+            scores_blob = summary.to_dict()
+
         # Persist
         run_data = {
             "run_id": run_id,
@@ -164,7 +207,7 @@ class BenchmarkService:
                 "scenario_count": len(resolved),
                 "scenario_ids": [s.id for s in resolved],
             },
-            "scores": summary.to_dict(),
+            "scores": scores_blob,
             "metadata": metadata,
         }
 

@@ -686,7 +686,7 @@ tool-eval-bench --compare <run_id_a> <run_id_b>
 
 ```bash
 ruff check .       # lint
-pytest             # 1,667 tests — scenario evaluators, plugins, storage, CLI
+pytest             # 1,697 tests — scenario evaluators, plugins, storage, CLI, adapter
                    # includes --cov-fail-under=55 coverage gate (current: 63%)
 ```
 

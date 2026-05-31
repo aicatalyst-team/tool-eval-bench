@@ -236,11 +236,11 @@ class TestPrintLeaderboard:
 
             output = console.file.getvalue()
             assert "P/F" in output
-            assert "N" in output
+            assert "Config" in output
             assert "Scores:" in output
             assert "safety-capped" in output
 
-    def test_shows_scenario_count_warning(self) -> None:
+    def test_shows_config_for_partial_runs(self) -> None:
         runs = [_make_run(scenario_count=15)]
         with patch("tool_eval_bench.storage.db.RunRepository") as MockRepo:
             repo = MagicMock()
@@ -251,7 +251,8 @@ class TestPrintLeaderboard:
             print_leaderboard(console)
 
             output = console.file.getvalue()
-            assert "⚠" in output
+            # Config column shows backend/scenario_count
+            assert "vllm/15" in output
 
     def test_shows_token_usage(self) -> None:
         runs = [_make_run(total_tokens=50000)]

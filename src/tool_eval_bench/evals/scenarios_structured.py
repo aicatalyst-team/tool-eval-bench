@@ -628,6 +628,7 @@ STRUCTURED_SCENARIOS: list[ScenarioDefinition] = [
         description="Produce valid JSON matching a strict schema without tool calls.",
         handle_tool_call=_tc64_handle, evaluate=_tc64_eval,
         response_format_override=_TC64_SCHEMA,
+        tools_override=[],
         difficulty=2,
     ),
     ScenarioDefinition(

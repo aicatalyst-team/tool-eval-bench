@@ -4,6 +4,40 @@ All notable changes to `tool-eval-bench` are documented here.
 
 ## [Unreleased]
 
+### Changed (Benchmark Integrity — 2.0 Readiness)
+
+- **Resume merges into original run** — `--resume <RUN_ID>` now reuses the
+  original run ID and merges prior passed results with new results, producing
+  a complete, comparable run instead of a partial fragment.
+
+- **Leaderboard comparability guards** — Runs are now grouped by
+  `(model, scenario_count, backend)` instead of model alone.  A `Config`
+  column replaces the old `N` column, showing `backend/scenarios`.  Short
+  runs cannot outrank full runs.
+
+- **Plugin results persisted to SQLite** — GSM8K, MMLU, and IFEval results
+  are now stored in the `scenario_runs` table with `run_type` column
+  (`gsm8k`, `mmlu`, `ifeval`).  Schema migration is automatic.
+
+- **Run ID uniqueness** — Timestamps now use microsecond resolution; a random
+  4-byte nonce is mixed into the hash to prevent collisions.  Temperature,
+  seed, error_rate, and backend are included in the hash payload.
+
+- **TC-64 no longer sends tools** — The "Simple Schema Compliance" scenario
+  now sets `tools_override=[]` so no tools are sent to the model.  The
+  orchestrator correctly distinguishes `None` (use defaults) from `[]`
+  (explicitly no tools).
+
+- **Error injection is reproducible** — When `--seed` is set, error injection
+  uses a per-scenario seeded `random.Random` instance, ensuring deterministic
+  injection patterns regardless of execution order.
+
+- **`output_dir` docstring fixed** — The API docstring now correctly states
+  that `output_dir` controls Markdown reports only, not the database.
+
+- **`test_adapter.py` included in CI** — The 30 adapter tests use httpx mocks
+  (no network), so they now run in all test suites.  Test count: 1,698.
+
 ### Added
 
 - **McNemar's significance test** in `--compare` — Automatically computes

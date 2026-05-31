@@ -55,15 +55,22 @@ _INJECTED_ERRORS = [
 ]
 
 
-def _maybe_inject_error(result: Any, error_rate: float) -> Any:
+def _maybe_inject_error(
+    result: Any, error_rate: float, rng: random.Random | None = None,
+) -> Any:
     """Randomly replace a mock tool response with a simulated error.
 
     Returns the original result unchanged if no error is injected.
     The error distribution follows Claw-Eval: ~33% each of 429, 500, timeout.
+
+    Args:
+        rng: Optional seeded Random instance for reproducibility.
+             Falls back to process-global random if None.
     """
-    if error_rate <= 0 or random.random() >= error_rate:
+    _rng = rng or random
+    if error_rate <= 0 or _rng.random() >= error_rate:
         return result
-    return random.choice(_INJECTED_ERRORS)
+    return _rng.choice(_INJECTED_ERRORS)
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +246,13 @@ async def run_scenario(
     )
     trace_lines: list[str] = ["assistant=starting"]
 
+    # Per-scenario seeded RNG for deterministic error injection.
+    # Uses hash(scenario.id) as offset so each scenario gets a unique
+    # but reproducible injection pattern regardless of execution order.
+    error_rng: random.Random | None = None
+    if seed is not None and error_rate > 0:
+        error_rng = random.Random(seed + hash(scenario.id) % (2**31))
+
     ttft_ms: float | None = None
     turn_latencies: list[float] = []
     total_prompt_tokens: int = 0
@@ -270,16 +284,17 @@ async def run_scenario(
             use_stream = turn == 1
 
             turn_start = time.perf_counter()
-            scenario_tools = scenario.tools_override or UNIVERSAL_TOOLS
+            # None → use defaults; [] → explicitly no tools
+            scenario_tools = (
+                UNIVERSAL_TOOLS if scenario.tools_override is None
+                else scenario.tools_override
+            )
             scenario_tool_choice = scenario.tool_choice_override or "auto"
 
             # Only send response_format on content turns (not tool-calling
             # turns).  Many backends (llama.cpp, older vLLM) reject
-            # response_format + tools in the same request.  We detect the
-            # "content turn" as: either the scenario has no tool expectations
-            # (TC-64, TC-68 style) or we're in a follow-up turn after tool
-            # results have been injected.  On turn 1 when tools are present,
-            # skip response_format so the model can make tool calls first.
+            # response_format + tools in the same request.  When tools is
+            # empty, response_format can be sent on turn 1 safely.
             response_format = scenario.response_format_override
             if response_format and scenario_tools and turn == 1 and not state.tool_calls:
                 # First turn with tools — let the model make tool calls without
@@ -289,8 +304,8 @@ async def run_scenario(
             result = await adapter.chat_completion(
                 model=model,
                 messages=messages,
-                tools=scenario_tools,
-                tool_choice=scenario_tool_choice,
+                tools=scenario_tools or None,  # Don't send empty list
+                tool_choice=scenario_tool_choice if scenario_tools else None,
                 temperature=temperature,
                 max_tokens=4096,
                 timeout_seconds=timeout_seconds,
@@ -356,7 +371,9 @@ async def run_scenario(
 
                 # Error injection: randomly replace with simulated failure
                 if error_rate > 0:
-                    mock_result = _maybe_inject_error(mock_result, error_rate)
+                    mock_result = _maybe_inject_error(
+                        mock_result, error_rate, rng=error_rng,
+                    )
 
                 state.tool_results.append(
                     ToolResultRecord(call_id=record.id, name=record.name, result=mock_result)

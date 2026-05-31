@@ -1313,6 +1313,28 @@ def _run_gsm8k_benchmark(
         report_lines = plugin.render_report_section(result)
         _write_gsm8k_report(reporter, run_id, display_name, result,
                            report_lines, run_context=run_context)
+
+        # Persist to SQLite (project rule: every run → SQLite)
+        from tool_eval_bench.storage.db import RunRepository
+        try:
+            repo = RunRepository()
+            repo.upsert_scenario_run({
+                "run_id": run_id,
+                "run_type": "gsm8k",
+                "status": "completed",
+                "config": run_config,
+                "scores": {
+                    "final_score": round(result.score),
+                    "accuracy": result.score,
+                    "rating": result.rating,
+                    **result.details,
+                },
+                "metadata": run_context or {},
+            })
+            repo.close()
+        except Exception:
+            pass  # Don't fail the benchmark if persistence fails
+
         console.print("\n  [dim]Report saved to runs/[/]\n")
 
 
@@ -1639,6 +1661,28 @@ def _run_mmlu_benchmark(
     ]
     md.extend(report_lines)
     path.write_text("\n".join(md), encoding="utf-8")
+
+    # Persist to SQLite (project rule: every run → SQLite)
+    from tool_eval_bench.storage.db import RunRepository
+    try:
+        repo = RunRepository()
+        repo.upsert_scenario_run({
+            "run_id": run_id,
+            "run_type": "mmlu",
+            "status": "completed",
+            "config": run_config,
+            "scores": {
+                "final_score": round(result.score),
+                "accuracy": result.score,
+                "rating": result.rating,
+                **result.details,
+            },
+            "metadata": run_context or {},
+        })
+        repo.close()
+    except Exception:
+        pass  # Don't fail the benchmark if persistence fails
+
     console.print("\n  [dim]Report saved to runs/[/]\n")
 
 
@@ -1905,6 +1949,28 @@ def _run_ifeval_benchmark(
     ]
     md.extend(report_lines)
     path.write_text("\n".join(md), encoding="utf-8")
+
+    # Persist to SQLite (project rule: every run → SQLite)
+    from tool_eval_bench.storage.db import RunRepository
+    try:
+        repo = RunRepository()
+        repo.upsert_scenario_run({
+            "run_id": run_id,
+            "run_type": "ifeval",
+            "status": "completed",
+            "config": run_config,
+            "scores": {
+                "final_score": round(result.score),
+                "accuracy": result.score,
+                "rating": result.rating,
+                **result.details,
+            },
+            "metadata": run_context or {},
+        })
+        repo.close()
+    except Exception:
+        pass  # Don't fail the benchmark if persistence fails
+
     console.print("\n  [dim]Report saved to runs/[/]\n")
 
 
@@ -2684,6 +2750,8 @@ def main() -> None:
     trials = max(1, args.trials)
 
     # -- Resume: skip scenarios that already passed in a prior run --
+    # When resuming, we reuse the original run_id and merge results after.
+    resume_prior_results: list[dict] | None = None
     if args.resume:
         from tool_eval_bench.storage.db import RunRepository
         resume_repo = RunRepository()
@@ -2721,6 +2789,16 @@ def main() -> None:
                 return
             # Inject the filtered list as --scenarios so it flows through
             args.scenarios = [s.id for s in remaining]
+            # Store prior results for post-run merge
+            resume_prior_results = [
+                r for r in prev_results if r.get("status") == "pass"
+            ]
+        # Store resume_run_id on args so the run_benchmark helpers can pass it
+        args._resume_run_id = args.resume
+    else:
+        args._resume_run_id = None
+    # Store prior results on args for service merge
+    args._resume_prior_results = resume_prior_results
 
     if trials > 1 and not args.json:
         console.print(f"[dim]  Running {trials} trials for statistical measurement…[/]\n")
@@ -3329,6 +3407,8 @@ def _run_with_live_display(
             context_pressure_config=context_pressure_config,
             run_context=run_context,
             weight_by_difficulty=getattr(args, 'weight_by_difficulty', False),
+            resume_run_id=getattr(args, '_resume_run_id', None),
+            resume_prior_results=getattr(args, '_resume_prior_results', None),
             **callbacks,
         )
 
@@ -3522,6 +3602,8 @@ def _run_json(
             context_pressure_config=context_pressure_config,
             run_context=run_context,
             weight_by_difficulty=getattr(args, 'weight_by_difficulty', False),
+            resume_run_id=getattr(args, '_resume_run_id', None),
+            resume_prior_results=getattr(args, '_resume_prior_results', None),
             on_scenario_start=_stderr_progress_start,
             on_scenario_result=_stderr_progress_result,
         )
@@ -3617,6 +3699,8 @@ def _run_plain(
             context_pressure_config=context_pressure_config,
             run_context=run_context,
             weight_by_difficulty=getattr(args, 'weight_by_difficulty', False),
+            resume_run_id=getattr(args, '_resume_run_id', None),
+            resume_prior_results=getattr(args, '_resume_prior_results', None),
             **callbacks,
         )
 

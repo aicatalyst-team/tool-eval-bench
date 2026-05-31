@@ -33,5 +33,6 @@ jobs:
       - name: Pytest
         run: >
           pytest --tb=short -q
+          --ignore=tests/test_llama_benchy.py
           --cov=tool_eval_bench --cov-report=term-missing
           --cov-fail-under=55

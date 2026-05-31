@@ -114,19 +114,34 @@ def _extract_leaderboard_rows(
 ) -> list[dict[str, Any]]:
     """Extract normalized rows from stored run data.
 
-    Groups by model and takes the best (highest-scoring) run for each.
+    Groups by (model, scenario_count, backend) so that runs with different
+    configurations are ranked separately. Takes the best (highest-scoring)
+    run within each group.
     """
-    # Group runs by model
-    by_model: dict[str, list[dict]] = {}
+    # Group runs by comparable configuration
+    by_config: dict[tuple[str, int, str], list[dict]] = {}
     for run in runs:
         model = run.get("model", "unknown")
-        by_model.setdefault(model, []).append(run)
+        config = run.get("config") or {}
+        scores = run.get("scores") or {}
+        run_type = run.get("run_type", "tool_eval")
+
+        # Skip non-tool-eval runs (plugins have their own display)
+        if run_type != "tool_eval":
+            continue
+
+        scenario_count = config.get("scenario_count", len(
+            scores.get("scenario_results", [])
+        ))
+        backend = config.get("backend", "?")
+        key = (model, scenario_count, backend)
+        by_config.setdefault(key, []).append(run)
 
     rows: list[dict[str, Any]] = []
-    for model, model_runs in by_model.items():
+    for (model, scenario_count, backend), group_runs in by_config.items():
         # Take the best run (highest final score)
         best = max(
-            model_runs,
+            group_runs,
             key=lambda r: (r.get("scores") or {}).get("final_score", 0),
         )
         scores = best.get("scores") or {}
@@ -158,14 +173,14 @@ def _extract_leaderboard_rows(
             "partials": partials,
             "fails": fails,
             "cat_scores": cat_scores,
-            "scenario_count": config.get("scenario_count", len(results)),
-            "backend": config.get("backend", "?"),
+            "scenario_count": scenario_count,
+            "backend": backend,
             "total_tokens": scores.get("total_tokens", 0),
             "token_efficiency": scores.get("token_efficiency"),
             "median_turn_ms": scores.get("median_turn_ms"),
             "deployability": scores.get("deployability"),
             "safety_warnings": len(scores.get("safety_warnings", [])),
-            "num_runs": len(model_runs),
+            "num_runs": len(group_runs),
             # Issue #6 metadata fields
             "tool_version": metadata.get("tool_version"),
             "engine_name": metadata.get("engine_name"),
@@ -225,6 +240,7 @@ def print_leaderboard(console: Console, limit: int = 50) -> None:
     # Rank column
     table.add_column("#", justify="center", width=3, style="bold")
     table.add_column("Model", min_width=20, no_wrap=True, max_width=40)
+    table.add_column("Config", justify="center", width=12, no_wrap=True)
     table.add_column("Score", justify="center", width=7, style="bold")
     table.add_column("Rating", justify="center", width=7)
     table.add_column("P/F", justify="center", width=9, no_wrap=True)
@@ -237,7 +253,6 @@ def print_leaderboard(console: Console, limit: int = 50) -> None:
         )
 
     # Efficiency and metadata
-    table.add_column("N", justify="center", width=4, no_wrap=True)
     table.add_column("Tokens", justify="right", width=8)
     table.add_column("Runs", justify="center", width=4)
 
@@ -264,6 +279,11 @@ def print_leaderboard(console: Console, limit: int = 50) -> None:
         # Rating stars
         rating_str = _rating_short(row["rating"])
 
+        # Config string (backend/scenario count)
+        sc_count = row.get("scenario_count", 0)
+        backend_label = row.get("backend", "?")
+        config_str = f"[dim]{backend_label}/{sc_count}[/]"
+
         # Pass/Fail summary
         p, pt, f = row["passes"], row["partials"], row["fails"]
         pf_str = f"[green]{p}[/]/[yellow]{pt}[/]/[red]{f}[/]"
@@ -277,13 +297,6 @@ def print_leaderboard(console: Console, limit: int = 50) -> None:
             else:
                 cat_cells.append(_score_bg(pct))
 
-        # Scenario count (flag partial runs)
-        sc_count = row.get("scenario_count", 0)
-        if sc_count < 69:
-            sc_str = f"[bold yellow]{sc_count}⚠[/]"
-        else:
-            sc_str = f"[dim]{sc_count}[/]"
-
         # Token usage
         tokens = row.get("total_tokens", 0)
         tok_str = f"[dim]{tokens // 1000}K[/]" if tokens > 0 else "[dim]—[/]"
@@ -294,11 +307,11 @@ def print_leaderboard(console: Console, limit: int = 50) -> None:
         table.add_row(
             rank,
             f"[bold]{model_name}[/]",
+            config_str,
             score_str,
             rating_str,
             pf_str,
             *cat_cells,
-            sc_str,
             tok_str,
             runs_str,
         )
@@ -315,14 +328,17 @@ def print_leaderboard(console: Console, limit: int = 50) -> None:
 
     # Check if any partial runs exist
     has_partial = any(r.get("scenario_count", 69) < 69 for r in rows)
-    partial_note = "\n  [bold yellow]⚠ N<69:[/] [dim]Partial run (--short/--categories) — not comparable to full runs.[/]" if has_partial else ""
+    partial_note = (
+        "\n  [dim]Runs with different backends or scenario counts are ranked separately.[/]"
+        if has_partial else ""
+    )
 
     console.print(
         Panel(
             "  ".join(legend_parts)
             + "\n\n"
             + "  [dim]P/F = ✅pass / ⚠️partial / ❌fail   │   "
-            + "N = scenario count   │   "
+            + "Config = backend/scenarios   │   "
             + "Scores: [bold green]90+[/] [green]75+[/] [yellow]60+[/] [red]40+[/] [bold red]<40[/]   │   "
             + "★★★ⓢ = safety-capped[/]"
             + partial_note,

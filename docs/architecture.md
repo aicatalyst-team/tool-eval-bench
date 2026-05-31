@@ -243,6 +243,6 @@ All backends use `OpenAICompatibleAdapter`. To support a new backend:
 | Storage | `test_reporter.py`, `test_history.py`, `test_storage_metadata.py` | Persistence, reports |
 | CLI | `test_display.py`, `test_leaderboard_display.py`, `test_e2e.py` | Display rendering, E2E flows |
 | API | `test_api.py`, `test_plugin_interface.py` | Programmatic API, schema drift |
-| Integration | `test_adapter.py` _(excluded)_ | Requires live server |
+| Adapter | `test_adapter.py` | SSE streaming, normalize, parse, error handling (httpx mocks) |
 
-**Total: 1,667 tests, 63% line coverage, 2.2s runtime.**
+**Total: 1,697 tests, 64% line coverage, 1.6s runtime.**
