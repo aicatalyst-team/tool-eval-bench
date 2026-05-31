@@ -2,7 +2,7 @@
 
 All notable changes to `tool-eval-bench` are documented here.
 
-## [Unreleased]
+## [2.0.0] — 2026-05-31
 
 ### Changed (Benchmark Integrity — 2.0 Readiness)
 
@@ -40,6 +40,40 @@ All notable changes to `tool-eval-bench` are documented here.
 
 - **`test_adapter.py` included in CI** — The 30 adapter tests use httpx mocks
   (no network), so they now run in all test suites.  Test count: 1,706.
+
+- **Resume config validation** — `--resume` now validates model and backend
+  match the prior run before proceeding.  Mismatches abort with a clear error.
+
+- **Resume display scoring** — The live display now shows the merged total
+  score after resume, not just the rerun subset score.
+
+- **Legacy resume trace safety** — Prior passes without `raw_log` traces are
+  automatically rerun for full-trace compliance instead of silently producing
+  blank trace sections.
+
+- **Benchmark revision fingerprinting** — `config_fingerprint` now includes
+  `tool_eval_bench.__version__`, preventing cross-version runs from being
+  grouped as comparable on the leaderboard.
+
+- **Standalone mode persistence** — `--perf-only`, `--perf-legacy-only`,
+  `--spec-bench`, and context-pressure sweeps now persist to SQLite, satisfying
+  the project rule that every completed run is stored.
+
+- **Plugin fingerprint enrichment** — GSM8K, MMLU, and IFEval fingerprints
+  now include temperature, seed, shuffle, and subjects parameters.
+
+- **`--compare` warns on incomparable runs** — McNemar analysis now warns
+  when runs have different config fingerprints.
+
+- **`--weight-by-difficulty` in live display** — The live display and
+  multi-trial scoring now respect the weighted scoring flag.
+
+- **SCHEMA_VERSION bumped to 2** — Reflects new CLI arguments added in 2.0.
+
+- **CI tests Python 3.13** — Test matrix expanded to 3.11, 3.12, and 3.13.
+
+- **Release checklist** — Added `RELEASING.md` with documented workflow for
+  wheel, sdist, install-smoke, tag, and publish.
 
 ### Added
 

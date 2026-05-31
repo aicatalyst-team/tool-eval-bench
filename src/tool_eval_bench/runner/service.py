@@ -297,9 +297,11 @@ def _build_run_config(
         if metadata.get(key) is not None
     }
     fingerprint_config = {**config, "scenario_ids": sorted(config["scenario_ids"])}
+    from tool_eval_bench import __version__
     config["config_fingerprint"] = build_config_fingerprint({
         "config": fingerprint_config,
         "deployment": comparison_context,
+        "tool_version": __version__,
     })
     return config
 

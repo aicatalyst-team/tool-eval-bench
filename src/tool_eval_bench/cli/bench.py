@@ -79,6 +79,20 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[ScenarioDefinition]:
     return base
 
 
+def _resolve_all_scenarios_for_ids(
+    scenario_ids: list[str],
+) -> list[ScenarioDefinition]:
+    """Resolve ScenarioDefinitions by ID from ALL known scenarios.
+
+    Used when reconstructing merged summaries from service-returned dicts
+    (e.g. after resume merge) where we need the full definitions for scoring.
+    """
+    from tool_eval_bench.evals.scenarios import ALL_SCENARIOS
+
+    by_id = {s.id: s for s in ALL_SCENARIOS}
+    return [by_id[sid] for sid in scenario_ids if sid in by_id]
+
+
 # ---------------------------------------------------------------------------
 # Load .env
 # ---------------------------------------------------------------------------
@@ -1050,10 +1064,21 @@ def _run_spec_bench(
     if ok_samples:
         from tool_eval_bench.utils.ids import build_run_id
 
-        run_config = {"model": model, "base_url": base_url, "mode": "spec-bench", "method": spec_method}
+        run_config = _with_config_fingerprint({
+            "model": model, "base_url": base_url,
+            "mode": "spec-bench", "method": spec_method,
+        })
         run_id = build_run_id(run_config)
         reporter = MarkdownReporter(root=output_dir)
         report_path = reporter.write_spec_decode_report(run_id, display_name, ok_samples)
+        _persist_plugin_run({
+            "run_id": run_id,
+            "run_type": "spec-bench",
+            "status": "completed",
+            "config": run_config,
+            "scores": {"samples": len(ok_samples)},
+            "metadata": _metadata_for_storage(None),
+        })
         console.print(f"\n  [dim]📄 Report saved to {report_path}[/]")
 
     try:
@@ -1326,6 +1351,7 @@ def _run_gsm8k_benchmark(
         run_config = _with_config_fingerprint({
             "model": model, "base_url": base_url,
             "mode": "gsm8k", "n_shots": n_shots, "limit": limit,
+            "temperature": args.temperature, "seed": seed, "shuffle": shuffle,
         })
         run_id = build_run_id(run_config)
         reporter = MarkdownReporter(root=output_dir)
@@ -1653,6 +1679,8 @@ def _run_mmlu_benchmark(
     run_config = _with_config_fingerprint({
         "model": model, "base_url": base_url,
         "mode": "mmlu", "n_shots": n_shots, "limit": limit,
+        "temperature": args.temperature, "seed": seed,
+        "subjects": subjects_str,
     })
     run_id = build_run_id(run_config)
     reporter = MarkdownReporter(root=output_dir)
@@ -1934,6 +1962,7 @@ def _run_ifeval_benchmark(
     run_config = _with_config_fingerprint({
         "model": model, "base_url": base_url,
         "mode": "ifeval", "limit": limit,
+        "temperature": args.temperature, "seed": seed,
     })
     run_id = build_run_id(run_config)
     reporter = MarkdownReporter(root=output_dir)
@@ -2516,16 +2545,24 @@ def main() -> None:
             # Write standalone throughput report
             from tool_eval_bench.utils.ids import build_run_id
 
-            run_config = {
+            run_config = _with_config_fingerprint({
                 "model": model, "backend": backend,
                 "base_url": base_url, "mode": "perf-only",
-            }
+            })
             run_id = build_run_id(run_config)
             reporter = MarkdownReporter(root=args.output_dir)
             report_path = reporter.write_throughput_report(
                 run_id, display_name, throughput_samples,
                 run_context=run_context,
             )
+            _persist_plugin_run({
+                "run_id": run_id,
+                "run_type": "perf",
+                "status": "completed",
+                "config": run_config,
+                "scores": {"samples": len(throughput_samples)},
+                "metadata": _metadata_for_storage(run_context),
+            })
             console.print(f"\n  [dim]Report saved to {report_path}[/]\n")
             return
 
@@ -2542,13 +2579,24 @@ def main() -> None:
         if args.perf_legacy_only:
             from tool_eval_bench.utils.ids import build_run_id
 
-            run_config = {"model": model, "backend": backend, "base_url": base_url, "mode": "perf-legacy-only"}
+            run_config = _with_config_fingerprint({
+                "model": model, "backend": backend,
+                "base_url": base_url, "mode": "perf-legacy-only",
+            })
             run_id = build_run_id(run_config)
             reporter = MarkdownReporter(root=args.output_dir)
             report_path = reporter.write_throughput_report(
                 run_id, display_name, legacy_samples,
                 run_context=run_context,
             )
+            _persist_plugin_run({
+                "run_id": run_id,
+                "run_type": "perf-legacy",
+                "status": "completed",
+                "config": run_config,
+                "scores": {"samples": len(legacy_samples)},
+                "metadata": _metadata_for_storage(run_context),
+            })
             console.print(f"\n  [dim]Report saved to {report_path}[/]\n")
             return
 
@@ -2756,44 +2804,85 @@ def main() -> None:
     if args.resume:
         from tool_eval_bench.storage.db import RunRepository
         resume_repo = RunRepository()
-        prev_results = resume_repo.get_scenario_results(args.resume)
+        prev_run = resume_repo.get(args.resume)
         resume_repo.close()
-        if prev_results is None:
+        if prev_run is None:
             console.print(
                 f"\n  [bold red]✗[/] Run '{args.resume}' not found in history.\n"
                 "  [dim]Use --history to list available runs.[/]\n"
             )
             sys.exit(1)
-        passed_ids = {
-            r["scenario_id"] for r in prev_results
-            if r.get("status") == "pass"
-        }
-        if not passed_ids:
+
+        # --- B1: Validate configuration compatibility ---
+        prev_config = prev_run.get("config") or {}
+        prev_model = prev_config.get("model", "")
+        prev_backend = prev_config.get("backend", "")
+        mismatches: list[str] = []
+        if prev_model and prev_model != model:
+            mismatches.append(f"model ({prev_model} → {model})")
+        if prev_backend and prev_backend != backend:
+            mismatches.append(f"backend ({prev_backend} → {backend})")
+        if mismatches:
+            console.print(
+                f"\n  [bold red]✗ Resume aborted: configuration mismatch[/]\n"
+                f"  [dim]Prior run differs in: {', '.join(mismatches)}[/]\n"
+                f"  [dim]Start a fresh run instead of resuming.[/]\n"
+            )
+            sys.exit(1)
+
+        prev_results = (prev_run.get("scores") or {}).get("scenario_results", [])
+        if not prev_results:
             if not args.json:
                 console.print(
-                    f"  [dim]ℹ No passed scenarios in run {args.resume} — running all.[/]"
+                    f"  [dim]ℹ No scenario results in run {args.resume} — running all.[/]"
                 )
         else:
-            # Override --scenarios to exclude already-passed IDs
-            resolved = _resolve_scenarios(args)
-            remaining = [s for s in resolved if s.id not in passed_ids]
-            if not args.json:
+            passed_ids = {
+                r["scenario_id"] for r in prev_results
+                if r.get("status") == "pass"
+            }
+
+            # --- B5: Reject legacy passes without raw_log traces ---
+            traceless = {
+                r["scenario_id"] for r in prev_results
+                if r.get("status") == "pass" and not r.get("raw_log")
+            }
+            if traceless and not args.json:
                 console.print(
-                    f"  [bold cyan]↻ Resume:[/] {len(passed_ids)} scenarios already passed "
-                    f"in [dim]{args.resume}[/], "
-                    f"running {len(remaining)} remaining"
+                    f"  [bold yellow]⚠[/] {len(traceless)} prior passes lack traces"
+                    " — will be rerun for full-trace compliance"
                 )
-            if not remaining:
-                console.print(
-                    "\n  [bold green]✓[/] All scenarios already passed — nothing to re-run.\n"
-                )
-                return
-            # Inject the filtered list as --scenarios so it flows through
-            args.scenarios = [s.id for s in remaining]
-            # Store prior results for post-run merge
-            resume_prior_results = [
-                r for r in prev_results if r.get("status") == "pass"
-            ]
+            # Remove traceless results from passed so they get rerun
+            passed_ids -= traceless
+
+            if not passed_ids:
+                if not args.json:
+                    console.print(
+                        f"  [dim]ℹ No usable passed scenarios in run {args.resume}"
+                        " — running all.[/]"
+                    )
+            else:
+                # Override --scenarios to exclude already-passed IDs
+                resolved = _resolve_scenarios(args)
+                remaining = [s for s in resolved if s.id not in passed_ids]
+                if not args.json:
+                    console.print(
+                        f"  [bold cyan]↻ Resume:[/] {len(passed_ids)} scenarios already passed "
+                        f"in [dim]{args.resume}[/], "
+                        f"running {len(remaining)} remaining"
+                    )
+                if not remaining:
+                    console.print(
+                        "\n  [bold green]✓[/] All scenarios already passed — nothing to re-run.\n"
+                    )
+                    return
+                # Inject the filtered list as --scenarios so it flows through
+                args.scenarios = [s.id for s in remaining]
+                # Store prior results for post-run merge (only those with traces)
+                resume_prior_results = [
+                    r for r in prev_results
+                    if r.get("status") == "pass" and r.get("raw_log")
+                ]
         # Store resume_run_id on args so the run_benchmark helpers can pass it
         args._resume_run_id = args.resume
     else:
@@ -3354,6 +3443,30 @@ def _run_pressure_sweep(
     ))
     console.print()
 
+    # Persist sweep to SQLite (project rule: every completed run → SQLite)
+    from tool_eval_bench.utils.ids import build_run_id
+
+    sweep_config = _with_config_fingerprint({
+        "model": model, "base_url": base_url,
+        "mode": "context-pressure-sweep",
+        "start": start, "end": end, "steps": steps,
+        "scenarios": scenario_ids,
+    })
+    sweep_run_id = build_run_id(sweep_config)
+    _persist_plugin_run({
+        "run_id": sweep_run_id,
+        "run_type": "context-pressure",
+        "status": "completed",
+        "config": sweep_config,
+        "scores": {
+            "levels": len(level_results),
+            "breaking_point": breaking_point,
+            "first_degradation": first_degradation,
+            "level_results": level_results,
+        },
+        "metadata": _metadata_for_storage(None),
+    })
+
 def _run_with_live_display(
     service: BenchmarkService,
     console: Console,
@@ -3417,21 +3530,51 @@ def _run_with_live_display(
         """Run all trials in a single event loop for connection reuse."""
         result = await run_trial(show=True)
 
-        all_results = [
-            display.results[s.id]
-            for s in scenarios
-            if s.id in display.results
-        ]
-        if all_results:
-            summary = score_results(all_results, scenarios, alpha=args.alpha)
+        # When resuming, the service has already merged prior results into
+        # result["scores"].  Use that merged summary for display instead of
+        # re-scoring only the rerun subset from display.results (which would
+        # show an inflated score — e.g. 100% from 5/5 reruns when the full
+        # set was 50% on 35/69).
+        has_resume = bool(getattr(args, '_resume_prior_results', None))
+        merged_scores = result.get("scores", {}) if has_resume else None
+
+        if merged_scores and has_resume:
+            # Reconstruct full summary from the merged service result
+            from tool_eval_bench.domain.scenarios import (
+                ScenarioResult as _SR,
+            )
+            merged_sr = [
+                _SR.from_dict(sr_dict)
+                for sr_dict in merged_scores.get("scenario_results", [])
+            ]
+            merged_scenario_defs = _resolve_all_scenarios_for_ids(
+                [sr.scenario_id for sr in merged_sr]
+            )
+            summary = score_results(
+                merged_sr, merged_scenario_defs, alpha=args.alpha,
+                weight_by_difficulty=getattr(args, 'weight_by_difficulty', False),
+            )
             all_summaries.append(summary)
             display.set_finished(summary, throughput_samples=throughput_samples)
-
-            # --diff: compare against previous run
-            if args.diff:
-                _print_diff(console, all_results, args.diff)
         else:
-            display.stop()
+            all_results = [
+                display.results[s.id]
+                for s in scenarios
+                if s.id in display.results
+            ]
+            if all_results:
+                summary = score_results(
+                    all_results, scenarios, alpha=args.alpha,
+                    weight_by_difficulty=getattr(args, 'weight_by_difficulty', False),
+                )
+                all_summaries.append(summary)
+                display.set_finished(summary, throughput_samples=throughput_samples)
+
+                # --diff: compare against previous run
+                if args.diff:
+                    _print_diff(console, all_results, args.diff)
+            else:
+                display.stop()
 
         # Print report path
         report_path = result.get("report_path")
@@ -3454,17 +3597,16 @@ def _run_with_live_display(
                     report_paths.append(str(trial_rp))
 
                 # Reconstruct ScenarioResult objects from the persisted dict
-                trial_sr = []
-                for sr_dict in trial_score_results:
-                    trial_sr.append(ScenarioResult(
-                        scenario_id=sr_dict["scenario_id"],
-                        status=ScenarioStatus(sr_dict["status"]),
-                        points=sr_dict["points"],
-                        summary=sr_dict.get("summary", ""),
-                        duration_seconds=sr_dict.get("duration_seconds", 0.0),
-                    ))
+                # Reconstruct ScenarioResult objects from the persisted dict
+                trial_sr = [
+                    ScenarioResult.from_dict(sr_dict)
+                    for sr_dict in trial_score_results
+                ]
                 if trial_sr:
-                    trial_summary = score_results(trial_sr, scenarios, alpha=args.alpha)
+                    trial_summary = score_results(
+                        trial_sr, scenarios, alpha=args.alpha,
+                        weight_by_difficulty=getattr(args, 'weight_by_difficulty', False),
+                    )
                     all_summaries.append(trial_summary)
                     console.print(f"[bold]{trial_summary.final_score}[/]/100")
 

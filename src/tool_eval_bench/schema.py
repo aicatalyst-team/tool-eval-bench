@@ -29,7 +29,7 @@ from typing import Any
 
 
 # Argument schema version — bump when adding/removing/renaming args.
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 ARGS_SCHEMA: list[dict[str, Any]] = [
     # -- Connection --

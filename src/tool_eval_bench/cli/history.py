@@ -317,6 +317,24 @@ def compare_runs(console: Console, run_id_a: str, run_id_b: str) -> None:
         console.print("\n  [red]One or both runs have no scenario results.[/]\n")
         return
 
+    # Warn if runs have different configurations
+    fp_a = run_a.get("config", {}).get("config_fingerprint")
+    fp_b = run_b.get("config", {}).get("config_fingerprint")
+    if fp_a and fp_b and fp_a != fp_b:
+        diffs: list[str] = []
+        cfg_a, cfg_b = run_a.get("config", {}), run_b.get("config", {})
+        for key in ("scenario_count", "backend", "temperature", "seed", "error_rate"):
+            va, vb = cfg_a.get(key), cfg_b.get(key)
+            if va != vb:
+                diffs.append(f"{key} ({va} vs {vb})")
+        diff_str = ", ".join(diffs) if diffs else "config fingerprints differ"
+        console.print(Panel(
+            f"  [bold yellow]⚠ These runs have different configurations[/]\n"
+            f"  [dim]{diff_str}[/]\n"
+            f"  [dim]McNemar results may not be meaningful.[/]",
+            border_style="yellow",
+        ))
+
     model_a = run_a.get("config", {}).get("model", "?")
     model_b = run_b.get("config", {}).get("model", "?")
 
