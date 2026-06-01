@@ -1,0 +1,5 @@
+# Commits that are pure formatting / style changes.
+# Configure with: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: apply ruff format to entire codebase
+7d2983792eaa4ae960e7b14c0881c7e30e12aa5f
