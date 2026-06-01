@@ -190,6 +190,8 @@ async def judge_failed_scenarios(
                     prompt_tokens=result.prompt_tokens,
                     completion_tokens=result.completion_tokens,
                     tool_call_arg_bytes=result.tool_call_arg_bytes,
+                    parallel_tool_turns=result.parallel_tool_turns,
+                    state_checkpoints=result.state_checkpoints,
                 )
                 updated.append(upgraded)
                 upgrades += 1

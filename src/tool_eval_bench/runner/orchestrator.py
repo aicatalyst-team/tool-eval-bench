@@ -264,6 +264,8 @@ async def run_scenario(
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     total_arg_bytes: int = 0  # Track tool call argument sizes
+    parallel_tool_turns: list[int] = []
+    state_checkpoints: list[str] = []
 
     # Build the queue of user messages: initial + any follow-ups
     follow_ups = list(scenario.follow_up_messages)  # copy so we can pop
@@ -359,6 +361,8 @@ async def run_scenario(
 
             tool_names = [tc.name for tc in result.tool_calls]
             trace_lines.append(f"tool_calls_requested={', '.join(tool_names)}")
+            if len(result.tool_calls) > 1:
+                parallel_tool_turns.append(turn)
 
             for tc in result.tool_calls:
                 record = ToolCallRecord(
@@ -386,6 +390,12 @@ async def run_scenario(
                 )
                 trace_lines.append(f"tool_result={json.dumps(mock_result)}")
                 messages.append(_tool_result_message(tc.id, mock_result))
+                if scenario.checkpoint:
+                    diagnostic = scenario.checkpoint(state, record)
+                    if diagnostic:
+                        state_checkpoints.append(diagnostic)
+                        state.meta.setdefault("state_checkpoints", []).append(diagnostic)
+                        trace_lines.append(f"state_checkpoint={diagnostic}")
 
     except Exception as exc:
         elapsed = time.monotonic() - t0
@@ -403,6 +413,8 @@ async def run_scenario(
             ttft_ms=ttft_ms,
             turn_count=len(turn_latencies),
             turn_latencies_ms=turn_latencies,
+            parallel_tool_turns=parallel_tool_turns,
+            state_checkpoints=state_checkpoints,
         )
 
     # Ensure we have a final answer
@@ -432,6 +444,8 @@ async def run_scenario(
             ttft_ms=ttft_ms,
             turn_count=len(turn_latencies),
             turn_latencies_ms=turn_latencies,
+            parallel_tool_turns=parallel_tool_turns,
+            state_checkpoints=state_checkpoints,
         )
 
     # Build diagnostic summary of what tools were actually called
@@ -468,6 +482,8 @@ async def run_scenario(
         prompt_tokens=total_prompt_tokens,
         completion_tokens=total_completion_tokens,
         tool_call_arg_bytes=total_arg_bytes,
+        parallel_tool_turns=parallel_tool_turns,
+        state_checkpoints=state_checkpoints,
     )
 
 

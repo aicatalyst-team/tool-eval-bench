@@ -194,6 +194,20 @@ class MarkdownReporter:
                     f"| {s.pp_tokens}+{s.tg_tokens} |"
                 )
 
+        diagnostic_results = [
+            r for r in summary.scenario_results
+            if r.parallel_tool_turns or r.state_checkpoints
+        ]
+        if diagnostic_results:
+            md.extend(["", "## Hard Mode Diagnostics", ""])
+            for r in diagnostic_results:
+                details: list[str] = []
+                if r.parallel_tool_turns:
+                    turns = ", ".join(str(turn) for turn in r.parallel_tool_turns)
+                    details.append(f"parallel tool turns: {turns}")
+                details.extend(r.state_checkpoints)
+                md.append(f"- **{r.scenario_id}**: {'; '.join(details)}")
+
         # Trace section
         md.extend(["", "## Traces", ""])
         for r in summary.scenario_results:

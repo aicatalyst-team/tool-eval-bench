@@ -166,6 +166,22 @@ class TestMarkdownReporter:
         assert "TC-99" in content
         assert path.stat().st_size > 100
 
+    def test_report_renders_hardmode_diagnostics(self, tmp_path):
+        reporter = MarkdownReporter(root=str(tmp_path))
+        summary = _make_summary(num_results=1)
+        summary.scenario_results[0].parallel_tool_turns = [1]
+        summary.scenario_results[0].state_checkpoints = [
+            "unsafe mutation before availability check",
+        ]
+
+        path = reporter.write_scenario_report("run_diag", "diag-model", summary)
+        content = path.read_text()
+
+        assert "## Hard Mode Diagnostics" in content
+        assert "TC-01" in content
+        assert "parallel tool turns: 1" in content
+        assert "unsafe mutation before availability check" in content
+
 
 class TestThroughputReport:
     def test_standalone_throughput_report(self, tmp_path):
@@ -457,4 +473,3 @@ class TestDefaultPaths:
         custom = tmp_path / "custom_reports"
         reporter = MarkdownReporter(root=str(custom))
         assert reporter.root == custom
-

@@ -111,6 +111,7 @@ class ScenarioEvaluation:
 # Callback types
 ToolCallHandler = Callable[[ScenarioState, ToolCallRecord], Any]
 Evaluator = Callable[[ScenarioState], ScenarioEvaluation]
+Checkpoint = Callable[[ScenarioState, ToolCallRecord], str | None]
 
 
 @dataclass
@@ -146,6 +147,9 @@ class ScenarioDefinition:
     #   4 = hard      — multi-turn state, adversarial prompts, large toolsets
     #   5 = very hard — compositional reasoning under multiple constraints
     difficulty: int | None = None
+    # Optional observation hook invoked after each executed tool call.
+    # Used by scenarios that need to detect unsafe intermediate states.
+    checkpoint: Checkpoint | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +200,9 @@ class ScenarioResult:
     completion_tokens: int = 0
     # Per-tool-call argument size tracking (for efficiency analysis)
     tool_call_arg_bytes: int = 0  # Total bytes of serialized tool call arguments
+    # Optional Hard Mode diagnostics
+    parallel_tool_turns: list[int] = field(default_factory=list)
+    state_checkpoints: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -220,6 +227,10 @@ class ScenarioResult:
             d["total_tokens"] = self.prompt_tokens + self.completion_tokens
         if self.tool_call_arg_bytes > 0:
             d["tool_call_arg_bytes"] = self.tool_call_arg_bytes
+        if self.parallel_tool_turns:
+            d["parallel_tool_turns"] = self.parallel_tool_turns
+        if self.state_checkpoints:
+            d["state_checkpoints"] = self.state_checkpoints
         return d
 
     @classmethod
@@ -241,6 +252,8 @@ class ScenarioResult:
             prompt_tokens=data.get("prompt_tokens", 0),
             completion_tokens=data.get("completion_tokens", 0),
             tool_call_arg_bytes=data.get("tool_call_arg_bytes", 0),
+            parallel_tool_turns=list(data.get("parallel_tool_turns", [])),
+            state_checkpoints=list(data.get("state_checkpoints", [])),
         )
 
 

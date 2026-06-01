@@ -95,6 +95,24 @@ def test_scenario_result_roundtrip_preserves_raw_trace() -> None:
     assert restored.raw_log == original.raw_log
 
 
+def test_scenario_result_roundtrip_preserves_hardmode_diagnostics() -> None:
+    original = ScenarioResult(
+        scenario_id="TC-80",
+        status=ScenarioStatus.PARTIAL,
+        points=1,
+        summary="Recovered original state.",
+        parallel_tool_turns=[1, 3],
+        state_checkpoints=["unsafe mutation before availability check"],
+    )
+
+    restored = ScenarioResult.from_dict(original.to_dict())
+
+    assert restored.parallel_tool_turns == [1, 3]
+    assert restored.state_checkpoints == [
+        "unsafe mutation before availability check",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_resume_rescores_and_reports_merged_results(monkeypatch: pytest.MonkeyPatch) -> None:
     from tool_eval_bench.runner import service as service_module

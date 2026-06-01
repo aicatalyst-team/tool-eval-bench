@@ -382,3 +382,54 @@ async def test_follow_up_messages() -> None:
 
     # Trace should include the follow-up
     assert "user_follow_up_1=" in result.raw_log
+
+
+@pytest.mark.asyncio
+async def test_parallel_tool_turns_records_same_turn_batch() -> None:
+    adapter = MockAdapter([
+        {"content": "", "tool_calls": [
+            {"name": "get_weather", "arguments": {"location": "Berlin"}},
+            {"name": "calculator", "arguments": {"expression": "1+1"}},
+        ]},
+        {"content": "Done."},
+    ])
+
+    result = await run_scenario(
+        adapter, model="test", base_url="http://localhost:8000",
+        api_key=None, scenario=MOCK_SCENARIO,
+    )
+
+    assert result.parallel_tool_turns == [1]
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_runs_after_each_tool_call() -> None:
+    seen: list[str] = []
+
+    def checkpoint(state: ScenarioState, call: ToolCallRecord) -> str | None:
+        seen.append(call.name)
+        if call.name == "calculator":
+            return "calculator observed"
+        return None
+
+    scenario = ScenarioDefinition(
+        id="TEST-CP", title="Checkpoint test", category=Category.P,
+        user_message="Call two tools", description="Checkpoint after each call",
+        handle_tool_call=_simple_handler, evaluate=_simple_evaluator,
+        checkpoint=checkpoint,
+    )
+    adapter = MockAdapter([
+        {"content": "", "tool_calls": [
+            {"name": "get_weather", "arguments": {"location": "Berlin"}},
+            {"name": "calculator", "arguments": {"expression": "1+1"}},
+        ]},
+        {"content": "Done."},
+    ])
+
+    result = await run_scenario(
+        adapter, model="test", base_url="http://localhost:8000",
+        api_key=None, scenario=scenario,
+    )
+
+    assert seen == ["get_weather", "calculator"]
+    assert result.state_checkpoints == ["calculator observed"]
