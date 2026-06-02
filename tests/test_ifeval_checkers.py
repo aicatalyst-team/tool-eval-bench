@@ -425,3 +425,136 @@ class TestIFEvalRating:
         from tool_eval_bench.plugins.ifeval.plugin import _rating_for_accuracy
 
         assert "Poor" in _rating_for_accuracy(20)
+
+
+# ---------------------------------------------------------------------------
+# Report rendering
+# ---------------------------------------------------------------------------
+
+
+class TestReportRendering:
+    """Test Markdown report section generation for IFEval."""
+
+    def _make_result(self, passed: int = 8, total: int = 10):
+        from tool_eval_bench.domain.plugin import BenchmarkResult
+        from tool_eval_bench.plugins.ifeval.plugin import _rating_for_accuracy
+
+        accuracy = passed / total * 100
+        items = []
+        for i in range(total):
+            is_pass = i < passed
+            items.append(
+                {
+                    "key": i,
+                    "prompt": f"Write a response that contains at least {i + 10} words.",
+                    "prompt_pass": is_pass,
+                    "instructions_passed": 1 if is_pass else 0,
+                    "instructions_total": 1,
+                    "instruction_details": [
+                        {
+                            "id": "length_constraints:number_words",
+                            "passed": is_pass,
+                            "error": None if is_pass else "Expected at least 10 words",
+                        }
+                    ],
+                    "model_response": "A sufficiently long response." if is_pass else "Short.",
+                }
+            )
+        return BenchmarkResult(
+            plugin_name="ifeval",
+            score=accuracy,
+            score_label=f"Prompt: {accuracy:.1f}%",
+            rating=_rating_for_accuracy(accuracy),
+            details={
+                "prompts_passed": passed,
+                "total": total,
+                "prompt_accuracy": round(accuracy, 2),
+                "instruction_accuracy": round(accuracy, 2),
+                "instructions_passed": passed,
+                "instructions_total": total,
+                "dataset_size": 541,
+                "constraint_types": {
+                    "length_constraints:number_words": {
+                        "passed": passed,
+                        "total": total,
+                        "accuracy": round(accuracy, 1),
+                    }
+                },
+            },
+            item_results=items,
+            metadata={"dataset": "google/IFEval"},
+            duration_seconds=30.0,
+            total_tokens=5000,
+        )
+
+    def test_report_has_accuracy(self):
+        from tool_eval_bench.plugins.ifeval.plugin import IFEvalPlugin
+
+        plugin = IFEvalPlugin()
+        lines = plugin.render_report_section(self._make_result(8, 10))
+        text = "\n".join(lines)
+        assert "80.0%" in text
+
+    def test_report_has_error_analysis(self):
+        from tool_eval_bench.plugins.ifeval.plugin import IFEvalPlugin
+
+        plugin = IFEvalPlugin()
+        lines = plugin.render_report_section(self._make_result(5, 10))
+        text = "\n".join(lines)
+        assert "Error Analysis" in text
+        assert "Constraint violations" in text
+
+    def test_report_shows_all_failures(self):
+        from tool_eval_bench.plugins.ifeval.plugin import IFEvalPlugin
+
+        plugin = IFEvalPlugin()
+        lines = plugin.render_report_section(self._make_result(0, 25))
+        text = "\n".join(lines)
+        assert "25 total" in text
+        assert "| 24 |" in text
+
+    def test_report_collapsible_for_large_failure_sets(self):
+        from tool_eval_bench.plugins.ifeval.plugin import IFEvalPlugin
+
+        plugin = IFEvalPlugin()
+        lines = plugin.render_report_section(self._make_result(0, 35))
+        text = "\n".join(lines)
+        assert "<details>" in text
+        assert "Show all 35 failures" in text
+        assert "</details>" in text
+
+    def test_report_has_prompt_text(self):
+        from tool_eval_bench.plugins.ifeval.plugin import IFEvalPlugin
+
+        plugin = IFEvalPlugin()
+        lines = plugin.render_report_section(self._make_result(5, 10))
+        text = "\n".join(lines)
+        assert "Prompt (excerpt)" in text
+
+    def test_report_has_failed_constraints(self):
+        from tool_eval_bench.plugins.ifeval.plugin import IFEvalPlugin
+
+        plugin = IFEvalPlugin()
+        lines = plugin.render_report_section(self._make_result(5, 10))
+        text = "\n".join(lines)
+        assert "Failed Constraints" in text
+        assert "length_constraints:number_words" in text
+
+    def test_report_has_detailed_failure_samples(self):
+        from tool_eval_bench.plugins.ifeval.plugin import IFEvalPlugin
+
+        plugin = IFEvalPlugin()
+        lines = plugin.render_report_section(self._make_result(5, 10))
+        text = "\n".join(lines)
+        assert "Detailed Failure Samples" in text
+        assert "**Prompt:**" in text
+        assert "**Model response:**" in text
+
+    def test_report_no_failures_when_perfect(self):
+        from tool_eval_bench.plugins.ifeval.plugin import IFEvalPlugin
+
+        plugin = IFEvalPlugin()
+        lines = plugin.render_report_section(self._make_result(10, 10))
+        text = "\n".join(lines)
+        assert "Failed Prompts" not in text
+        assert "Error Analysis" not in text

@@ -229,3 +229,123 @@ class TestRating:
         from tool_eval_bench.plugins.mmlu.plugin import _rating_for_accuracy
 
         assert "Poor" in _rating_for_accuracy(20)
+
+
+# ---------------------------------------------------------------------------
+# Report rendering
+# ---------------------------------------------------------------------------
+
+
+class TestReportRendering:
+    """Test Markdown report section generation for MMLU."""
+
+    def _make_result(self, correct: int = 8, total: int = 10):
+        from tool_eval_bench.domain.plugin import BenchmarkResult
+        from tool_eval_bench.plugins.mmlu.plugin import _rating_for_accuracy
+
+        accuracy = correct / total * 100
+        items = []
+        for i in range(total):
+            is_correct = i < correct
+            items.append(
+                {
+                    "index": i,
+                    "subject": "abstract_algebra",
+                    "category": "STEM",
+                    "question": f"What is the order of the group Z_{i + 2}?",
+                    "correct": is_correct,
+                    "ground_truth": "B" if is_correct else "C",
+                    "extracted_answer": "B" if is_correct else None,
+                    "extraction_method": "exact" if is_correct else "none",
+                    "model_response": "The answer is B" if is_correct else "I think...",
+                }
+            )
+        return BenchmarkResult(
+            plugin_name="mmlu",
+            score=accuracy,
+            score_label=f"{accuracy:.1f}% ({correct}/{total})",
+            rating=_rating_for_accuracy(accuracy),
+            details={
+                "correct": correct,
+                "total": total,
+                "accuracy": round(accuracy, 2),
+                "n_shots": 5,
+                "dataset_size": 14042,
+                "categories": {
+                    "STEM": {"correct": correct, "total": total, "accuracy": round(accuracy, 1)},
+                },
+                "extraction_methods": {
+                    "exact": correct,
+                    "none": total - correct,
+                },
+            },
+            item_results=items,
+            metadata={"dataset": "cais/mmlu"},
+            duration_seconds=60.0,
+            total_tokens=10000,
+        )
+
+    def test_report_has_accuracy(self):
+        from tool_eval_bench.plugins.mmlu.plugin import MMLUPlugin
+
+        plugin = MMLUPlugin()
+        lines = plugin.render_report_section(self._make_result(8, 10))
+        text = "\n".join(lines)
+        assert "80.0%" in text
+        assert "8/10" in text
+
+    def test_report_has_error_analysis(self):
+        from tool_eval_bench.plugins.mmlu.plugin import MMLUPlugin
+
+        plugin = MMLUPlugin()
+        lines = plugin.render_report_section(self._make_result(5, 10))
+        text = "\n".join(lines)
+        assert "Error Analysis" in text
+        assert "No answer extracted" in text
+
+    def test_report_shows_all_failures(self):
+        from tool_eval_bench.plugins.mmlu.plugin import MMLUPlugin
+
+        plugin = MMLUPlugin()
+        lines = plugin.render_report_section(self._make_result(0, 25))
+        text = "\n".join(lines)
+        assert "25 total" in text
+        assert "| 24 |" in text  # Last failure visible
+
+    def test_report_collapsible_for_large_failure_sets(self):
+        from tool_eval_bench.plugins.mmlu.plugin import MMLUPlugin
+
+        plugin = MMLUPlugin()
+        lines = plugin.render_report_section(self._make_result(0, 35))
+        text = "\n".join(lines)
+        assert "<details>" in text
+        assert "Show all 35 failures" in text
+        assert "</details>" in text
+
+    def test_report_has_question_and_response_columns(self):
+        from tool_eval_bench.plugins.mmlu.plugin import MMLUPlugin
+
+        plugin = MMLUPlugin()
+        lines = plugin.render_report_section(self._make_result(5, 10))
+        text = "\n".join(lines)
+        assert "Question (excerpt)" in text
+        assert "Response (excerpt)" in text
+
+    def test_report_has_detailed_failure_samples(self):
+        from tool_eval_bench.plugins.mmlu.plugin import MMLUPlugin
+
+        plugin = MMLUPlugin()
+        lines = plugin.render_report_section(self._make_result(5, 10))
+        text = "\n".join(lines)
+        assert "Detailed Failure Samples" in text
+        assert "**Question:**" in text
+        assert "**Model response:**" in text
+
+    def test_report_no_failures_when_perfect(self):
+        from tool_eval_bench.plugins.mmlu.plugin import MMLUPlugin
+
+        plugin = MMLUPlugin()
+        lines = plugin.render_report_section(self._make_result(10, 10))
+        text = "\n".join(lines)
+        assert "Failed Questions" not in text
+        assert "Error Analysis" not in text

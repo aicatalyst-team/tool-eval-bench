@@ -122,7 +122,7 @@ class IFEvalPlugin(BenchmarkPlugin):
                         extra_params=extra_params,
                     )
 
-                content = response.content or ""
+                content = response.content or response.reasoning or ""
                 total_tokens += (response.prompt_tokens or 0) + (response.completion_tokens or 0)
                 is_error = False
             except Exception as exc:
@@ -165,7 +165,7 @@ class IFEvalPlugin(BenchmarkPlugin):
                         }
                         for ir in result.instruction_results
                     ],
-                    "model_response": content[:500],
+                    "model_response": content[:1000],
                 }
 
             if on_progress:
@@ -266,22 +266,108 @@ class IFEvalPlugin(BenchmarkPlugin):
                 )
             lines.append("")
 
-        # Failed prompts (sample)
+        # Error analysis
         failures = [r for r in result.item_results if not r.get("prompt_pass")]
+        errors = [r for r in failures if r.get("is_error")]
+        non_errors = [r for r in failures if not r.get("is_error")]
+
         if failures:
-            show = failures[:15]
-            header = f"{len(failures)} total"
-            if len(failures) > 15:
-                header += ", showing 15"
             lines.extend(
                 [
-                    f"### Failed Prompts ({header})",
+                    "### Error Analysis",
+                    "",
+                    f"- **Total failed prompts**: {len(failures)} / {d['total']}",
+                ]
+            )
+            if non_errors:
+                lines.append(
+                    f"- **Constraint violations**: {len(non_errors)} — model "
+                    "responded but did not satisfy all instruction constraints"
+                )
+            if errors:
+                lines.append(f"- **Server errors**: {len(errors)} — timeouts or API failures")
+            lines.append("")
+
+        # Full failures table (collapsible if > 30)
+        if failures:
+            use_details = len(failures) > 30
+            lines.append(f"### Failed Prompts ({len(failures)} total)")
+            lines.append("")
+            if use_details:
+                lines.append("<details>")
+                lines.append(f"<summary>Show all {len(failures)} failures</summary>")
+                lines.append("")
+
+            lines.extend(
+                [
+                    "| Key | Prompt (excerpt) | Instructions | Passed | Failed Constraints |",
+                    "|---|---|---:|---:|---|",
+                ]
+            )
+            for f in failures:
+                prompt = (f.get("prompt", "") or "").replace("|", "\\|").replace("\n", " ").strip()
+                if len(prompt) > 120:
+                    prompt = prompt[:117] + "…"
+                total_instr = f.get("instructions_total", 0)
+                passed_instr = f.get("instructions_passed", 0)
+                failed_ids = [
+                    d_item["id"]
+                    for d_item in f.get("instruction_details", [])
+                    if not d_item["passed"]
+                ]
+                failed_str = ", ".join(f"`{fid}`" for fid in failed_ids) if failed_ids else "—"
+                lines.append(
+                    f"| {f['key']} | {prompt} | {total_instr} | {passed_instr} | {failed_str} |"
+                )
+
+            if use_details:
+                lines.append("")
+                lines.append("</details>")
+            lines.append("")
+
+        # Detailed failure samples (up to 5)
+        non_error_failures = [f for f in failures if not f.get("is_error")]
+        samples = non_error_failures[:5]
+        if samples:
+            lines.extend(
+                [
+                    "### Detailed Failure Samples",
                     "",
                 ]
             )
-            for f in show:
-                failed_ids = [d["id"] for d in f.get("instruction_details", []) if not d["passed"]]
-                lines.append(f"- **Key {f['key']}**: failed `{'`, `'.join(failed_ids)}`")
-            lines.append("")
+            for f in samples:
+                failed_ids = [
+                    d_item for d_item in f.get("instruction_details", []) if not d_item["passed"]
+                ]
+                lines.append(f"#### Prompt #{f['key']}")
+                lines.append("")
+                lines.append(
+                    f"**Passed:** {f.get('instructions_passed', 0)}/"
+                    f"{f.get('instructions_total', 0)} instructions"
+                )
+                lines.append("")
+                if failed_ids:
+                    lines.append("**Failed constraints:**")
+                    lines.append("")
+                    for d_item in failed_ids:
+                        err = d_item.get("error", "")
+                        err_str = f" — {err}" if err else ""
+                        lines.append(f"- `{d_item['id']}`{err_str}")
+                    lines.append("")
+                prompt = (f.get("prompt", "") or "").strip()
+                lines.append("**Prompt:**")
+                lines.append("")
+                lines.append(f"> {prompt}")
+                lines.append("")
+                resp = (f.get("model_response", "") or "").strip()
+                if resp:
+                    lines.append("**Model response:**")
+                    lines.append("")
+                    lines.append("```")
+                    lines.append(resp[:500])
+                    lines.append("```")
+                else:
+                    lines.append("**Model response:** *(empty)*")
+                lines.append("")
 
         return lines

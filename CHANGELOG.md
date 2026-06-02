@@ -2,6 +2,42 @@
 
 All notable changes to `tool-eval-bench` are documented here.
 
+## [2.0.4] — 2026-06-02
+
+### Added
+
+- **`--hardmode-only` CLI flag** — run only the 15 Category P Hard Mode
+  scenarios. Equivalent to `--hardmode --categories P` but more discoverable.
+  Registered in `ARGS_SCHEMA` for programmatic consumers.
+
+### Improved
+
+- **Enriched benchmark reports** — GSM8K, MMLU, and IFEval Markdown reports now
+  include:
+  - **Error Analysis** section categorizing failures (no answer extracted, wrong
+    answer, server errors) for immediate pattern recognition.
+  - **Full failure tables** — all failures shown (no more 20-item cap).
+    Collapsible `<details>` wrapper when >30 failures for readability.
+  - **Question/prompt text** — 120-char excerpt in failure table.
+  - **Model response text** — 200-char excerpt in table, 500-char in detailed
+    samples. Storage increased from 500→1000 chars.
+  - **5 Detailed Failure Samples** — full question + full model response for
+    manual inspection and debugging.
+
+### Fixed
+
+- **Empty model responses for reasoning models** — GSM8K, MMLU, and IFEval
+  now fall back to `reasoning_content` when `content` is empty. Reasoning
+  models (Step-3.7-Flash, DeepSeek-R1, Qwen3) return thinking in a separate
+  field; when the model fails to produce a final answer, `content` is empty but
+  `reasoning` has the full chain-of-thought. The fix improves both answer
+  extraction (the evaluator can now search reasoning text for patterns) and
+  report diagnostics (detailed samples show the thinking instead of "(empty)").
+
+- **15 new report rendering tests** — MMLU and IFEval now have `TestReportRendering`
+  classes matching GSM8K's coverage. 3 new `--hardmode-only` tests in
+  `TestResolveScenarios`. Total test count: **1,765**.
+
 ## [2.0.3] — 2026-06-02
 
 ### Improved

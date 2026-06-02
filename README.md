@@ -192,6 +192,7 @@ tool-eval-bench --model gemma4 --backend vllm --base-url http://localhost:8080
 --categories CAT       Run specific categories (e.g. K A J); letters A–P
 --short                Run only the core 15 scenarios
 --hardmode             Include Hard Mode scenarios (Category P) for ceiling-breaking difficulty
+--hardmode-only        Run ONLY Hard Mode scenarios (equivalent to --hardmode --categories P)
 --trials N             Run N trials; generates individual reports + a consolidated summary report with Pass@k, Pass^k, flaky detection
 --error-rate RATE      Inject random tool errors at given rate (0.0–1.0) for robustness testing
 --context-pressure R   Fill context to R (0.0–1.0) before each scenario to test tool-calling under pressure
@@ -416,7 +417,8 @@ The standard 69-scenario benchmark covers *breadth* of tool-calling capabilities
 tool-eval-bench --hardmode
 
 # Run only Hard Mode scenarios
-tool-eval-bench --hardmode --categories P
+tool-eval-bench --hardmode-only
+tool-eval-bench --hardmode --categories P  # equivalent
 
 # Combined with context pressure for maximum difficulty
 tool-eval-bench --hardmode --context-pressure 0.75
@@ -701,7 +703,7 @@ tool-eval-bench --compare <run_id_a> <run_id_b>
 
 ```bash
 ruff check .       # lint
-pytest             # 1,744 tests — scenario evaluators, plugins, storage, CLI, adapter
+pytest             # 1,765 tests — scenario evaluators, plugins, storage, CLI, adapter
                    # includes --cov-fail-under=55 coverage gate (current: 63%)
 ```
 

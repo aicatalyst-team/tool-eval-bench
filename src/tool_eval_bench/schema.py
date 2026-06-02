@@ -138,6 +138,12 @@ ARGS_SCHEMA: list[dict[str, Any]] = [
         "default": False,
         "description": "Include Hard Mode scenarios (Category P)",
     },
+    {
+        "name": "hardmode_only",
+        "type": "bool",
+        "default": False,
+        "description": "Run ONLY Hard Mode scenarios (Category P)",
+    },
     # -- Run control --
     {
         "name": "timeout",

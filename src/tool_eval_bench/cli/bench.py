@@ -69,6 +69,7 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[ScenarioDefinition]:
     """Resolve scenarios from --short, --scenarios, --categories, and --hardmode flags.
 
     Priority: --scenarios (individual IDs) > --categories > --short > all.
+    --hardmode-only runs Category P scenarios exclusively.
     --hardmode adds Category P scenarios to whichever base set is selected.
     """
     from tool_eval_bench.evals.scenarios import (
@@ -79,7 +80,9 @@ def _resolve_scenarios(args: argparse.Namespace) -> list[ScenarioDefinition]:
     from tool_eval_bench.evals.scenarios_hardmode import HARDMODE_SCENARIOS
 
     # Determine the base scenario pool
-    if args.short:
+    if getattr(args, "hardmode_only", False):
+        base = list(HARDMODE_SCENARIOS)
+    elif args.short:
         base = list(SCENARIOS)
         if getattr(args, "hardmode", False):
             base.extend(HARDMODE_SCENARIOS)
@@ -2310,6 +2313,11 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include Hard Mode scenarios (Category P) — ceiling-breaking difficulty "
         "for models that score 100%% on the standard benchmark",
+    )
+    select.add_argument(
+        "--hardmode-only",
+        action="store_true",
+        help="Run ONLY Hard Mode scenarios (Category P) — shortcut for --hardmode --categories P",
     )
 
     # -- Run control -------------------------------------------------------

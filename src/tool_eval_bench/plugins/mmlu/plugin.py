@@ -145,7 +145,7 @@ class MMLUPlugin(BenchmarkPlugin):
                         extra_params=extra_params,
                     )
 
-                content = response.content or ""
+                content = response.content or response.reasoning or ""
                 total_tokens += (response.prompt_tokens or 0) + (response.completion_tokens or 0)
                 is_error = False
             except Exception as exc:
@@ -180,7 +180,7 @@ class MMLUPlugin(BenchmarkPlugin):
                     "extracted_answer": result.extracted_answer,
                     "ground_truth": result.ground_truth_letter,
                     "extraction_method": result.extraction_method,
-                    "model_response": content[:500],
+                    "model_response": content[:1000],
                 }
 
             results[idx] = result_dict
@@ -284,27 +284,116 @@ class MMLUPlugin(BenchmarkPlugin):
                 lines.append(f"- **{method}**: {count}")
             lines.append("")
 
-        # Failed questions (sample)
+        # Error analysis
         failures = [r for r in result.item_results if not r.get("correct")]
+        errors = [r for r in failures if r.get("is_error")]
+        no_extract = [
+            r for r in failures if not r.get("is_error") and r.get("extraction_method") == "none"
+        ]
+        wrong_answer = [
+            r
+            for r in failures
+            if not r.get("is_error")
+            and r.get("extraction_method") != "none"
+            and r.get("extracted_answer") is not None
+        ]
+
         if failures:
-            show = failures[:20]
-            header = f"{len(failures)} total"
-            if len(failures) > 20:
-                header += ", showing 20"
             lines.extend(
                 [
-                    f"### Failed Questions ({header})",
+                    "### Error Analysis",
                     "",
-                    "| # | Subject | Expected | Got | Method |",
-                    "|---|---|---|---|---|",
+                    f"- **Total failures**: {len(failures)} / {d['total']}",
                 ]
             )
-            for f in show:
+            if no_extract:
                 lines.append(
-                    f"| {f['index']} | {f['subject']} | "
-                    f"{f['ground_truth']} | {f.get('extracted_answer', '—')} | "
-                    f"{f.get('extraction_method', '—')} |"
+                    f"- **No answer extracted**: {len(no_extract)} — model did not "
+                    "produce a recognizable A/B/C/D answer"
                 )
+            if wrong_answer:
+                lines.append(
+                    f"- **Wrong answer**: {len(wrong_answer)} — model chose the wrong option"
+                )
+            if errors:
+                lines.append(f"- **Server errors**: {len(errors)} — timeouts or API failures")
             lines.append("")
+
+        # Full failures table (collapsible if > 30)
+        if failures:
+            use_details = len(failures) > 30
+            lines.append(f"### Failed Questions ({len(failures)} total)")
+            lines.append("")
+            if use_details:
+                lines.append("<details>")
+                lines.append(f"<summary>Show all {len(failures)} failures</summary>")
+                lines.append("")
+
+            lines.extend(
+                [
+                    "| # | Subject | Question (excerpt) | Expected | Got "
+                    "| Method | Response (excerpt) |",
+                    "|---|---|---|---|---|---|---|",
+                ]
+            )
+            for f in failures:
+                question = (
+                    (f.get("question", "") or "").replace("|", "\\|").replace("\n", " ").strip()
+                )
+                if len(question) > 120:
+                    question = question[:117] + "…"
+                resp = (
+                    (f.get("model_response", "") or "")
+                    .replace("|", "\\|")
+                    .replace("\n", " ")
+                    .strip()
+                )
+                if len(resp) > 150:
+                    resp = resp[:147] + "…"
+                lines.append(
+                    f"| {f['index']} | {f.get('subject', '—')} | {question} "
+                    f"| {f['ground_truth']} | {f.get('extracted_answer') or '—'} "
+                    f"| {f.get('extraction_method', '—')} | {resp} |"
+                )
+
+            if use_details:
+                lines.append("")
+                lines.append("</details>")
+            lines.append("")
+
+        # Detailed failure samples (up to 5)
+        non_error_failures = [f for f in failures if not f.get("is_error")]
+        samples = non_error_failures[:5]
+        if samples:
+            lines.extend(
+                [
+                    "### Detailed Failure Samples",
+                    "",
+                ]
+            )
+            for f in samples:
+                lines.append(f"#### Question #{f['index']} ({f.get('subject', '?')})")
+                lines.append("")
+                lines.append(
+                    f"**Expected:** {f['ground_truth']} · "
+                    f"**Got:** {f.get('extracted_answer') or '(none)'} · "
+                    f"**Method:** {f.get('extraction_method', '?')}"
+                )
+                lines.append("")
+                question = (f.get("question", "") or "").strip()
+                lines.append("**Question:**")
+                lines.append("")
+                lines.append(f"> {question}")
+                lines.append("")
+                resp = (f.get("model_response", "") or "").strip()
+                if resp:
+                    lines.append("**Model response:**")
+                    lines.append("")
+                    lines.append("```")
+                    lines.append(resp[:500])
+                    lines.append("```")
+                else:
+                    lines.append("**Model response:** *(empty)*")
+                lines.append("")
 
         return lines

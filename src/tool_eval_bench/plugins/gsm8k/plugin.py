@@ -235,7 +235,7 @@ class GSM8KPlugin(BenchmarkPlugin):
                 base_url=base_url,
                 extra_params=extra_params,
             )
-            response_text = result.content or ""
+            response_text = result.content or result.reasoning or ""
             tokens = (result.prompt_tokens or 0) + (result.completion_tokens or 0)
         except Exception as exc:
             logger.debug("Error on question %d: %s", item.index, exc)
@@ -260,7 +260,7 @@ class GSM8KPlugin(BenchmarkPlugin):
             "ground_truth": eval_result.ground_truth,
             "extracted_answer": eval_result.extracted_answer,
             "extraction_method": eval_result.extraction_method,
-            "model_response": response_text[:500],  # Truncate for storage
+            "model_response": response_text[:1000],  # Truncate for storage
             "tokens": tokens,
         }
 
@@ -299,27 +299,118 @@ class GSM8KPlugin(BenchmarkPlugin):
                 md.append(f"| {method} | {count} |")
             md.append("")
 
-        # Failures table (up to 20)
+        # Error analysis
         failures = [r for r in result.item_results if not r["correct"]]
+        errors = [r for r in failures if r.get("is_error")]
+        no_extract = [
+            r for r in failures if not r.get("is_error") and r.get("extraction_method") == "none"
+        ]
+        wrong_answer = [
+            r
+            for r in failures
+            if not r.get("is_error")
+            and r.get("extraction_method") != "none"
+            and r.get("extracted_answer") is not None
+        ]
+
         if failures:
-            show = failures[:20]
             md.extend(
                 [
-                    f"### Failed Questions ({len(failures)} total, showing {len(show)})",
+                    "### Error Analysis",
                     "",
-                    "| # | Ground Truth | Extracted | Method | Response (truncated) |",
-                    "|---:|---:|---:|---|---|",
+                    f"- **Total failures**: {len(failures)} / {details['total']}",
                 ]
             )
-            for f in show:
+            if no_extract:
+                md.append(
+                    f"- **No answer extracted**: {len(no_extract)} — model did not "
+                    "produce a recognizable numeric answer (no `#### N` marker, "
+                    "no 'the answer is N' pattern, no trailing number)"
+                )
+            if wrong_answer:
+                md.append(
+                    f"- **Wrong answer**: {len(wrong_answer)} — model produced a "
+                    "numeric answer that didn't match the ground truth"
+                )
+            if errors:
+                md.append(f"- **Server errors**: {len(errors)} — timeouts or API failures")
+            md.append("")
+
+        # Full failures table (collapsible if > 30)
+        if failures:
+            use_details = len(failures) > 30
+            md.append(f"### Failed Questions ({len(failures)} total)")
+            md.append("")
+            if use_details:
+                md.append("<details>")
+                md.append(f"<summary>Show all {len(failures)} failures</summary>")
+                md.append("")
+
+            md.extend(
+                [
+                    "| # | Question (excerpt) | Ground Truth | Extracted | Method "
+                    "| Response (excerpt) |",
+                    "|---:|---|---:|---:|---|---|",
+                ]
+            )
+            for f in failures:
                 gt = f["ground_truth"]
                 ext = f.get("extracted_answer")
                 ext_str = f"{ext}" if ext is not None else "—"
                 method = f.get("extraction_method", "?")
-                resp = (
-                    (f.get("model_response", "") or "")[:80].replace("|", "\\|").replace("\n", " ")
+                question = (
+                    (f.get("question", "") or "").replace("|", "\\|").replace("\n", " ").strip()
                 )
-                md.append(f"| {f['index']} | {gt} | {ext_str} | {method} | {resp} |")
+                if len(question) > 120:
+                    question = question[:117] + "…"
+                resp = (
+                    (f.get("model_response", "") or "")
+                    .replace("|", "\\|")
+                    .replace("\n", " ")
+                    .strip()
+                )
+                if len(resp) > 200:
+                    resp = resp[:197] + "…"
+                md.append(f"| {f['index']} | {question} | {gt} | {ext_str} | {method} | {resp} |")
+
+            if use_details:
+                md.append("")
+                md.append("</details>")
             md.append("")
+
+        # Detailed failure samples (up to 5) — full question + response
+        non_error_failures = [f for f in failures if not f.get("is_error")]
+        samples = non_error_failures[:5]
+        if samples:
+            md.extend(
+                [
+                    "### Detailed Failure Samples",
+                    "",
+                ]
+            )
+            for f in samples:
+                gt = f["ground_truth"]
+                ext = f.get("extracted_answer")
+                ext_str = f"{ext}" if ext is not None else "(none)"
+                method = f.get("extraction_method", "?")
+                md.append(f"#### Question #{f['index']}")
+                md.append("")
+                md.append(f"**Expected:** {gt} · **Got:** {ext_str} · **Method:** {method}")
+                md.append("")
+                question = (f.get("question", "") or "").strip()
+                md.append("**Question:**")
+                md.append("")
+                md.append(f"> {question}")
+                md.append("")
+                resp = (f.get("model_response", "") or "").strip()
+                if resp:
+                    md.append("**Model response:**")
+                    md.append("")
+                    md.append("```")
+                    md.append(resp[:500])
+                    md.append("```")
+                else:
+                    md.append("**Model response:** *(empty)*")
+                md.append("")
 
         return md

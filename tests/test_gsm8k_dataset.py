@@ -305,10 +305,41 @@ class TestReportRendering:
         text = "\n".join(lines)
         assert "45.0s" in text
 
-    def test_report_failures_capped_at_20(self):
-        """Only show first 20 failures even if there are more."""
+    def test_report_shows_all_failures(self):
+        """All failures should be shown (no cap), with collapsible details for >30."""
         plugin = GSM8KPlugin()
         result = self._make_result(correct=0, total=30)
         lines = plugin.render_report_section(result)
         text = "\n".join(lines)
-        assert "30 total, showing 20" in text
+        assert "30 total" in text
+        # All 30 failures should appear in the table (index 0-29)
+        assert "| 29 |" in text
+
+    def test_report_collapsible_for_large_failure_sets(self):
+        """Failures > 30 should be wrapped in <details>."""
+        plugin = GSM8KPlugin()
+        result = self._make_result(correct=0, total=35)
+        lines = plugin.render_report_section(result)
+        text = "\n".join(lines)
+        assert "<details>" in text
+        assert "Show all 35 failures" in text
+        assert "</details>" in text
+
+    def test_report_has_error_analysis(self):
+        """Reports with failures should include an Error Analysis section."""
+        plugin = GSM8KPlugin()
+        result = self._make_result(correct=5, total=10)
+        lines = plugin.render_report_section(result)
+        text = "\n".join(lines)
+        assert "Error Analysis" in text
+        assert "No answer extracted" in text
+
+    def test_report_has_detailed_failure_samples(self):
+        """Reports should include detailed failure deep-dives."""
+        plugin = GSM8KPlugin()
+        result = self._make_result(correct=5, total=10)
+        lines = plugin.render_report_section(result)
+        text = "\n".join(lines)
+        assert "Detailed Failure Samples" in text
+        assert "**Question:**" in text
+        assert "**Model response:**" in text

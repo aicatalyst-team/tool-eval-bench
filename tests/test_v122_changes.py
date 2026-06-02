@@ -151,7 +151,13 @@ class TestReservedForScenario:
 
 class TestResolveScenarios:
     def _args(self, **kwargs) -> argparse.Namespace:
-        defaults = {"short": False, "scenarios": None, "categories": None}
+        defaults = {
+            "short": False,
+            "scenarios": None,
+            "categories": None,
+            "hardmode": False,
+            "hardmode_only": False,
+        }
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
 
@@ -219,6 +225,36 @@ class TestResolveScenarios:
         # Category Z doesn't exist, but categories are uppercased
         # and filtered — no match means empty list
         result = _resolve_scenarios(self._args(categories=["Z"]))
+        assert len(result) == 0
+
+    def test_hardmode_only_returns_only_category_p(self) -> None:
+        """--hardmode-only should return only hardmode scenarios."""
+        from tool_eval_bench.cli.bench import _resolve_scenarios
+        from tool_eval_bench.evals.scenarios_hardmode import HARDMODE_SCENARIOS
+
+        result = _resolve_scenarios(self._args(hardmode_only=True))
+        assert len(result) == len(HARDMODE_SCENARIOS)
+        assert all(s.category == Category.P for s in result)
+
+    def test_hardmode_only_ignores_short(self) -> None:
+        """--hardmode-only takes precedence over --short."""
+        from tool_eval_bench.cli.bench import _resolve_scenarios
+        from tool_eval_bench.evals.scenarios_hardmode import HARDMODE_SCENARIOS
+
+        result = _resolve_scenarios(self._args(hardmode_only=True, short=True))
+        assert len(result) == len(HARDMODE_SCENARIOS)
+
+    def test_hardmode_only_with_categories_filters(self) -> None:
+        """--hardmode-only + --categories should filter within hardmode."""
+        from tool_eval_bench.cli.bench import _resolve_scenarios
+
+        # Category P with --hardmode-only should return all hardmode
+        result = _resolve_scenarios(self._args(hardmode_only=True, categories=["P"]))
+        assert len(result) > 0
+        assert all(s.category == Category.P for s in result)
+
+        # Non-matching category with --hardmode-only should return empty
+        result = _resolve_scenarios(self._args(hardmode_only=True, categories=["A"]))
         assert len(result) == 0
 
 
