@@ -26,7 +26,7 @@ def _normalize_tool_calls(raw_calls: list[dict] | None) -> list[ProviderToolCall
         return []
     result = []
     for idx, call in enumerate(raw_calls):
-        func = call.get("function", {})
+        func = call.get("function") or {}
         args = func.get("arguments", "{}")
         if isinstance(args, dict):
             args = json.dumps(args)
@@ -227,11 +227,11 @@ class OpenAICompatibleAdapter(BackendAdapter):
                 if chunk.get("usage"):
                     stream_usage = chunk["usage"]
 
-                choices = chunk.get("choices", [])
+                choices = chunk.get("choices") or []
                 if not choices:
                     continue
 
-                delta = choices[0].get("delta", {})
+                delta = choices[0].get("delta") or {}
 
                 # Measure TTFT on first content or tool_call delta
                 if ttft_ms is None and (delta.get("content") or delta.get("tool_calls")):
@@ -247,7 +247,7 @@ class OpenAICompatibleAdapter(BackendAdapter):
                     reasoning_parts.append(reasoning)
 
                 # Accumulate tool calls
-                for tc_delta in delta.get("tool_calls", []):
+                for tc_delta in delta.get("tool_calls") or []:
                     idx = tc_delta.get("index", 0)
                     if idx not in tool_calls_map:
                         tool_calls_map[idx] = {
@@ -255,7 +255,7 @@ class OpenAICompatibleAdapter(BackendAdapter):
                             "name": "",
                             "arguments": "",
                         }
-                    func = tc_delta.get("function", {})
+                    func = tc_delta.get("function") or {}
                     if func.get("name"):
                         tool_calls_map[idx]["name"] = func["name"]
                     if func.get("arguments"):
@@ -310,7 +310,7 @@ class OpenAICompatibleAdapter(BackendAdapter):
         reasoning = message.get("reasoning_content") or message.get("reasoning")
 
         # Extract token usage (most OpenAI-compatible servers include this)
-        usage = data.get("usage", {})
+        usage = data.get("usage") or {}
         prompt_tokens = usage.get("prompt_tokens")
         completion_tokens = usage.get("completion_tokens")
 

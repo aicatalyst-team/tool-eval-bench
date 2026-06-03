@@ -80,6 +80,14 @@ class TestNormalizeToolCalls:
         assert len(result) == 3
         assert [r.name for r in result] == ["a", "b", "c"]
 
+    def test_null_function_field(self) -> None:
+        """function=null should be treated as empty, not crash. (GH-12 hardening)"""
+        raw = [{"id": "c1", "function": None}]
+        result = _normalize_tool_calls(raw)
+        assert len(result) == 1
+        assert result[0].name == "unknown_tool"
+        assert result[0].arguments_str == "{}"
+
 
 # ---------------------------------------------------------------------------
 # _parse_response — unit tests
@@ -170,6 +178,17 @@ class TestParseResponse:
         data = {"choices": []}
         result = OpenAICompatibleAdapter._parse_response(data, 1.0)
         assert result.content == ""
+
+    def test_null_usage_field(self) -> None:
+        """usage=null should not crash token extraction. (GH-12 hardening)"""
+        data = {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": None,
+        }
+        result = OpenAICompatibleAdapter._parse_response(data, 1.0)
+        assert result.content == "ok"
+        assert result.prompt_tokens is None
+        assert result.completion_tokens is None
 
 
 # ---------------------------------------------------------------------------
@@ -693,4 +712,172 @@ async def test_stream_multiple_tool_calls() -> None:
     assert result.tool_calls[0].id == "tc_a"
     assert result.tool_calls[1].name == "func_b"
     assert result.tool_calls[1].id == "tc_b"
+    await adapter.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for issue #12: null values in SSE delta chunks (SGLang)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_null_choices_skipped() -> None:
+    """Chunks with choices=null (SGLang) should be skipped, not crash. (GH-12)"""
+    chunks = [
+        json.dumps({"choices": None}),
+        json.dumps({"choices": [{"delta": {"content": "hello"}}]}),
+    ]
+    body = _sse_lines(*chunks)
+
+    adapter = OpenAICompatibleAdapter()
+    adapter._client = httpx.AsyncClient(transport=_mock_stream_transport(body))
+
+    result = await adapter.chat_completion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        base_url="http://localhost:8000",
+        stream=True,
+    )
+
+    assert result.content == "hello"
+    assert result.tool_calls == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_null_delta_skipped() -> None:
+    """Chunks with delta=null (SGLang) should be skipped, not crash. (GH-12)"""
+    chunks = [
+        json.dumps({"choices": [{"delta": None}]}),
+        json.dumps({"choices": [{"delta": {"content": "world"}}]}),
+    ]
+    body = _sse_lines(*chunks)
+
+    adapter = OpenAICompatibleAdapter()
+    adapter._client = httpx.AsyncClient(transport=_mock_stream_transport(body))
+
+    result = await adapter.chat_completion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        base_url="http://localhost:8000",
+        stream=True,
+    )
+
+    assert result.content == "world"
+    assert result.tool_calls == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_null_tool_calls_skipped() -> None:
+    """Chunks with tool_calls=null (SGLang) should be skipped, not crash. (GH-12)"""
+    chunks = [
+        json.dumps({"choices": [{"delta": {"tool_calls": None}}]}),
+        json.dumps(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "tc_1",
+                                    "function": {
+                                        "name": "get_weather",
+                                        "arguments": '{"location": "Berlin"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ),
+    ]
+    body = _sse_lines(*chunks)
+
+    adapter = OpenAICompatibleAdapter()
+    adapter._client = httpx.AsyncClient(transport=_mock_stream_transport(body))
+
+    result = await adapter.chat_completion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        base_url="http://localhost:8000",
+        stream=True,
+    )
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "get_weather"
+    assert result.tool_calls[0].id == "tc_1"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_all_nulls_sglang_style() -> None:
+    """Full SGLang-style stream: null choices, null delta, null tool_calls mixed. (GH-12)"""
+    chunks = [
+        json.dumps({"choices": None}),
+        json.dumps({"choices": [{"delta": None}]}),
+        json.dumps({"choices": [{"delta": {"content": None, "tool_calls": None}}]}),
+        json.dumps({"choices": [{"delta": {"content": "ok"}}]}),
+    ]
+    body = _sse_lines(*chunks)
+
+    adapter = OpenAICompatibleAdapter()
+    adapter._client = httpx.AsyncClient(transport=_mock_stream_transport(body))
+
+    result = await adapter.chat_completion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        base_url="http://localhost:8000",
+        stream=True,
+    )
+
+    assert result.content == "ok"
+    assert result.tool_calls == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_null_function_in_tool_call_delta() -> None:
+    """Tool call delta with function=null should not crash. (GH-12 hardening)"""
+    chunks = [
+        json.dumps(
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "tc_1", "function": None}]}}]}
+        ),
+        json.dumps(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "search",
+                                        "arguments": '{"q": "test"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ),
+    ]
+    body = _sse_lines(*chunks)
+
+    adapter = OpenAICompatibleAdapter()
+    adapter._client = httpx.AsyncClient(transport=_mock_stream_transport(body))
+
+    result = await adapter.chat_completion(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        base_url="http://localhost:8000",
+        stream=True,
+    )
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "search"
+    assert result.tool_calls[0].id == "tc_1"
     await adapter.aclose()
