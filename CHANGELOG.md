@@ -2,6 +2,15 @@
 
 All notable changes to `tool-eval-bench` are documented here.
 
+## [2.0.5] — 2026-06-07
+
+### Fixed
+
+- **Context pressure budget display clarified** — `--context-pressure 1`
+  now explicitly reports that the percentage applies to the available fill
+  budget, and the displayed scenario headroom no longer double-counts tool
+  schema tokens.
+
 ## [2.0.4] — 2026-06-02
 
 ### Added

@@ -266,6 +266,20 @@ class TestContextPressureConfigSummary:
         s = cfg.summary()
         assert "0%" in s
 
+    def test_summary_clarifies_fill_budget_not_total_context(self) -> None:
+        cfg = ContextPressureConfig(ratio=1.0, fill_tokens=16544, detected_context=35000)
+        s = cfg.summary().lower()
+        assert "available fill budget" in s
+
+    def test_budget_breakdown_does_not_double_count_tool_tokens(self) -> None:
+        cfg = ContextPressureConfig(ratio=1.0, fill_tokens=16544, detected_context=35000)
+        budget = cfg.budget_breakdown(tool_tokens=5000)
+        assert budget["fill_tokens"] == 16544
+        assert budget["tool_tokens"] == 5000
+        assert budget["output_tokens"] == _RESERVED_FOR_OUTPUT
+        assert budget["scenario_budget_tokens"] == 35000 - 16544 - _RESERVED_FOR_OUTPUT
+        assert budget["remaining_headroom_tokens"] == (35000 - 16544 - _RESERVED_FOR_OUTPUT - 5000)
+
 
 # ---------------------------------------------------------------------------
 # detect_context_size (mock HTTP)

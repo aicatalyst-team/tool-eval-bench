@@ -277,7 +277,22 @@ class ContextPressureConfig:
         pct = int(self.ratio * 100)
         fill_k = self.fill_tokens / 1000
         ctx_k = self.detected_context / 1000
-        return f"{pct}% (~{fill_k:.0f}K tokens prefilled of {ctx_k:.0f}K context)"
+        return (
+            f"{pct}% of available fill budget "
+            f"(~{fill_k:.0f}K tokens prefilled in {ctx_k:.0f}K context)"
+        )
+
+    def budget_breakdown(self, *, tool_tokens: int = 0) -> dict[str, int]:
+        """Return a consistent token budget breakdown for display/reporting."""
+        scenario_budget = self.detected_context - self.fill_tokens - _RESERVED_FOR_OUTPUT
+        remaining_headroom = scenario_budget - tool_tokens
+        return {
+            "fill_tokens": self.fill_tokens,
+            "tool_tokens": tool_tokens,
+            "output_tokens": _RESERVED_FOR_OUTPUT,
+            "scenario_budget_tokens": scenario_budget,
+            "remaining_headroom_tokens": remaining_headroom,
+        }
 
 
 # ---------------------------------------------------------------------------

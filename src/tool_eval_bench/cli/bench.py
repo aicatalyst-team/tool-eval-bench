@@ -3206,13 +3206,11 @@ def main() -> None:
                     _RESERVED_FOR_OUTPUT,
                 )
 
-                headroom = (
-                    pressure_cfg.detected_context - pressure_cfg.fill_tokens - _RESERVED_FOR_OUTPUT
-                )
+                budget = pressure_cfg.budget_breakdown(tool_tokens=tool_tokens_est)
                 fill_k = pressure_cfg.fill_tokens / 1000
                 tool_k = tool_tokens_est / 1000
                 out_k = _RESERVED_FOR_OUTPUT / 1000
-                head_k = headroom / 1000
+                head_k = budget["remaining_headroom_tokens"] / 1000
 
                 console.print(
                     f"  [dim]  {pressure_cfg.summary()} — "
@@ -3222,7 +3220,7 @@ def main() -> None:
                     f"  [dim]  Budget: [bold]{fill_k:.0f}K[/] fill │ "
                     f"~{tool_k:.0f}K tools ({num_tools} loaded) │ "
                     f"{out_k:.0f}K output │ "
-                    f"{head_k:.0f}K headroom[/]\n"
+                    f"{head_k:.0f}K scenario headroom[/]\n"
                 )
             # Auto-scale timeout for context pressure: large fills need
             # significant prefill time.  Without this, a 182K fill at the
