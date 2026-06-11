@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tool-eval-bench-import
+  namespace: poc-tool-eval-bench
+  labels:
+    app: tool-eval-bench
+    autopoc.io/project: tool-eval-bench
+    autopoc.io/scenario: module-import
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 60
+  template:
+    spec:
+      containers:
+        - name: tool-eval-bench
+          image: quay.io/aicatalyst/tool-eval-bench:latest
+          imagePullPolicy: Always
+          command: ["python"]
+          args: ["-c", "from tool_eval_bench.api import run_benchmark; from tool_eval_bench.evals.scenarios import ALL_SCENARIOS; print(f'{len(ALL_SCENARIOS)} scenarios loaded')"]
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      restartPolicy: Never

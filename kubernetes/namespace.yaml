@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: poc-tool-eval-bench
+  labels:
+    app.kubernetes.io/name: tool-eval-bench
+    app.kubernetes.io/managed-by: autopoc

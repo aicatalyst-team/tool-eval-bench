@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tool-eval-bench-version
+  namespace: poc-tool-eval-bench
+  labels:
+    app: tool-eval-bench
+    autopoc.io/project: tool-eval-bench
+    autopoc.io/scenario: version-check
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 60
+  template:
+    spec:
+      containers:
+        - name: tool-eval-bench
+          image: quay.io/aicatalyst/tool-eval-bench:latest
+          imagePullPolicy: Always
+          command: ["python"]
+          args: ["-c", "from tool_eval_bench import __version__; print(__version__)"]
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      restartPolicy: Never
