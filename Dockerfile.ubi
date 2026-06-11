@@ -2,17 +2,11 @@ FROM registry.access.redhat.com/ubi9/python-312
 
 WORKDIR /opt/app-root/src
 
-# Copy dependency file first (for layer caching)
-COPY pyproject.toml ./
+# Copy all application source (pyproject.toml needs src/ and README.md during build)
+COPY . .
 
 # Install the package and its dependencies
 RUN pip install --no-cache-dir .
-
-# Copy application code
-COPY . .
-
-# Re-install in editable mode so CLI entry point uses local source
-RUN pip install --no-cache-dir -e .
 
 # OpenShift compatibility
 RUN chgrp -R 0 /opt/app-root && chmod -R g=u /opt/app-root
