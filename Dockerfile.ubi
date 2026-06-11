@@ -8,14 +8,14 @@ USER 0
 # Copy all application source (pyproject.toml needs src/ and README.md during build)
 COPY . .
 
-# Fix permissions so pip can write egg-info in src/
-RUN chown -R 1001:0 /opt/app-root/src
+# Fix permissions so pip can write egg-info in src/ and install packages
+RUN chown -R 1001:0 /opt/app-root
 
-# Switch back to default user for pip install
+# Switch back to default user for pip install (UBI python uses virtualenv)
 USER 1001
 
 # Install the package and its dependencies
-RUN pip install --no-cache-dir --user .
+RUN pip install --no-cache-dir .
 
 # Switch to root for final permissions
 USER 0
@@ -26,9 +26,6 @@ RUN chgrp -R 0 /opt/app-root && chmod -R g=u /opt/app-root
 # No EXPOSE - CLI tool does not listen on ports
 
 USER 1001
-
-# Ensure user-installed scripts are on PATH
-ENV PATH="/opt/app-root/src/.local/bin:${PATH}"
 
 ENTRYPOINT ["tool-eval-bench"]
 CMD ["--help"]
